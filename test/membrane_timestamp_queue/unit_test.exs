@@ -1,10 +1,10 @@
 defmodule Membrane.TimestampQueue.UnitTest do
   use ExUnit.Case, async: true
 
+  require Membrane.Pad, as: Pad
+
   alias Membrane.Buffer
   alias Membrane.TimestampQueue
-
-  require Membrane.Pad, as: Pad
 
   test "queue raises on buffer with nil dts" do
     assert_raise(RuntimeError, fn ->
@@ -281,8 +281,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end)
   end
 
-  # todo: unify tests naming convention
-  test "waiting on pads" do
+  test "queue doesn't return any buffer, if it should wait on pad" do
     queue =
       TimestampQueue.new()
       |> TimestampQueue.wait_on_pad(:a)
