@@ -74,7 +74,7 @@ defmodule Membrane.TimestampQueue.Mixfile do
       extras: ["README.md", "LICENSE"],
       formatters: ["html"],
       source_ref: "v#{@version}",
-      nest_modules_by_prefix: [Membrane.Template]
+      nest_modules_by_prefix: [Membrane.TimestampQueue]
     ]
   end
 end
