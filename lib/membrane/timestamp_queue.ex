@@ -34,13 +34,13 @@ defmodule Membrane.TimestampQueue do
   their timestamps.
   """
   @opaque t :: %__MODULE__{
-          current_queue_time: Membrane.Time.t(),
-          pause_demand_boundary: pos_integer() | :infinity,
-          metric: Metric.ByteSize | Metric.Count,
-          pad_queues: %{optional(Pad.ref()) => pad_queue()},
-          pads_heap: Heap.t(),
-          waiting_on_buffer_from: MapSet.t()
-        }
+            current_queue_time: Membrane.Time.t(),
+            pause_demand_boundary: pos_integer() | :infinity,
+            metric: Metric.ByteSize | Metric.Count,
+            pad_queues: %{optional(Pad.ref()) => pad_queue()},
+            pads_heap: Heap.t(),
+            waiting_on_buffer_from: MapSet.t()
+          }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
             pause_demand_boundary: :infinity,
@@ -325,11 +325,11 @@ defmodule Membrane.TimestampQueue do
             |> put_in([:pad_queues, pad_ref, :update_heap_on_buffer?], false)
             |> do_pop()
 
-            %{buffers_number: 1, end_of_stream?: false} ->
-              # last buffer on pad queue without end of stream
-              {:none, timestamp_queue}
+          %{buffers_number: 1, end_of_stream?: false} ->
+            # last buffer on pad queue without end of stream
+            {:none, timestamp_queue}
 
-            pad_queue ->
+          pad_queue ->
             buffer_size = timestamp_queue.metric.buffers_size([buffer])
 
             pad_queue = %{
