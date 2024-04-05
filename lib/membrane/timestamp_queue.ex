@@ -77,11 +77,15 @@ defmodule Membrane.TimestampQueue do
   end
 
   @doc """
-  Makes the queue not return any buffer in `pop_batch/3`, until a buffer or end of stream arrival
-  from `pad_ref`.
+  Registers an input pad in the queue without pushing anything on that pad.
+
+  Once a pad is registered, the `pop_batch/3` function won't return buffers
+  until a `buffer` or `end_of_stream` is available on the registered pad.
+
+  Pushing a buffer on an unregistered pad automatically registers it.
   """
-  @spec wait_on_pad(t(), Pad.ref()) :: t()
-  def wait_on_pad(%__MODULE__{} = timestamp_queue, pad_ref) do
+  @spec register_pad(t(), Pad.ref()) :: t()
+  def register_pad(%__MODULE__{} = timestamp_queue, pad_ref) do
     timestamp_queue
     |> Map.update!(:waiting_on_buffer_from, &MapSet.put(&1, pad_ref))
   end
@@ -140,10 +144,11 @@ defmodule Membrane.TimestampQueue do
     end
 
     buffer_timestamp = if pad_queue.use_pts?, do: buffer.pts, else: buffer.dts
-    timestamp_field = if pad_queue.use_pts?, do: "pts", else: "dts"
     max_timestamp = pad_queue.max_timestamp_on_qex
 
     if is_integer(max_timestamp) and max_timestamp > buffer_timestamp do
+      timestamp_field = if pad_queue.use_pts?, do: "pts", else: "dts"
+
       raise """
       Buffer #{inspect(buffer, pretty: true)} from pad #{inspect(pad_ref)} has #{timestamp_field} equal \
       #{inspect(buffer_timestamp)}, but previous buffer pushed on queue from this pad had #{timestamp_field} \

@@ -281,11 +281,11 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end)
   end
 
-  test "queue doesn't return any buffer, if it should wait on pad" do
+  test "queue doesn't return any buffer, if it should wait on buffer from registered pad" do
     queue =
       TimestampQueue.new()
-      |> TimestampQueue.wait_on_pad(:a)
-      |> TimestampQueue.wait_on_pad(:b)
+      |> TimestampQueue.register_pad(:a)
+      |> TimestampQueue.register_pad(:b)
 
     events = for i <- 1..1000, do: %Event{dts: i}
     buffers = for i <- 1..1000, do: %Buffer{dts: i, payload: <<>>}
