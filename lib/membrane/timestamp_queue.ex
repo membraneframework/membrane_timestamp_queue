@@ -274,10 +274,12 @@ defmodule Membrane.TimestampQueue do
   @doc """
   Pops items from the queue while they are available.
 
-  An item that is not a buffer is always considered available. A buffer is
-  available when the following conditions are met:
-  - There is another buffer or `end_of_stream` enqueued on the pad
-  - On each other pad there is either `end_of_stream` or a buffer with a lower timestamp.
+  A buffer `b` from pad `p` is available, if all pads different than `p`
+    - either have a buffer in the queue, that is older than `b`
+    - or have end of stream pushed on the queue.
+
+  An item that is not a buffer is considered available if all buffers from the same pad,
+  which are newer than the item are available.
 
   The returned value is a suggested actions list, a list of popped buffers and the updated queue.
 
