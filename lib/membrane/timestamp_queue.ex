@@ -38,7 +38,8 @@ defmodule Membrane.TimestampQueue do
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
             registered_pads: MapSet.t(),
-            awaiting_pads: [Pad.ref()]
+            awaiting_pads: [Pad.ref()],
+            closed?: boolean()
           }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
@@ -47,7 +48,8 @@ defmodule Membrane.TimestampQueue do
             pad_queues: %{},
             pads_heap: Heap.max(),
             registered_pads: MapSet.new(),
-            awaiting_pads: []
+            awaiting_pads: [],
+            closed?: false
 
   @typedoc """
   Options passed to #{inspect(__MODULE__)}.new/1.
@@ -195,6 +197,21 @@ defmodule Membrane.TimestampQueue do
     |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
   end
 
+  defp push_item(%__MODULE__{closed?: true}, pad_ref, item) do
+    inspected_item =
+      case item do
+        :end_of_stream -> "end of stream"
+        {:stream_format, value} -> "stream format #{inspect(value)}"
+        {type, value} -> "#{type} #{inspect(value)}"
+      end
+
+    raise """
+    Unable to push #{inspected_item} from pad #{inspect(pad_ref)} on the already closed #{inspect(__MODULE__)}. \
+    After calling #{inspect(__MODULE__)}.flush_and_close/1 queue is not capable to handle new items and new \
+    queue has to be created.
+    """
+  end
+
   defp push_item(%__MODULE__{} = timestamp_queue, pad_ref, item) do
     timestamp_queue
     |> maybe_update_heap_on_pushing_item(pad_ref, item)
@@ -288,7 +305,7 @@ defmodule Membrane.TimestampQueue do
   `pause_demand_boundary`, the suggested actions list contains `t:Action.resume_auto_demand()`
   actions, otherwise it is an empty list.
   """
-  @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value() | :none], t()}
+  @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def pop_batch(%__MODULE__{} = timestamp_queue) do
     do_pop_batch(timestamp_queue)
   end
@@ -383,11 +400,19 @@ defmodule Membrane.TimestampQueue do
 
       {:empty, _empty_qex} ->
         # cleanup, recursion to pop_batch
-
         timestamp_queue
         |> Map.update!(:pad_queues, &Map.delete(&1, pad_ref))
         |> Map.update!(:pads_heap, &Heap.pop/1)
         |> do_pop_batch(actions_acc, items_acc)
     end
+  end
+
+  @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
+  def flush_and_close(%__MODULE__{} = timestamp_queue) do
+    %{timestamp_queue | closed?: true}
+    |> Map.update!(:pad_queues, &Map.new(&1, fn {pad_ref, data} ->
+      {pad_ref, %{data | end_of_stream?: true}}
+    end))
+    |> pop_batch()
   end
 end
