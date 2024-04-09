@@ -6,6 +6,14 @@ defmodule Membrane.TimestampQueue.UnitTest do
   alias Membrane.Buffer
   alias Membrane.TimestampQueue
 
+  defmodule StreamFormat do
+    defstruct [:dts]
+  end
+
+  defmodule Event do
+    defstruct [:dts]
+  end
+
   test "queue raises on buffer with nil dts and pts" do
     assert_raise(RuntimeError, fn ->
       TimestampQueue.new()
@@ -79,14 +87,6 @@ defmodule Membrane.TimestampQueue.UnitTest do
     # assert queue empty
     assert queue.pad_queues == TimestampQueue.new().pad_queues
     assert queue.pads_heap == TimestampQueue.new().pads_heap
-  end
-
-  defmodule StreamFormat do
-    defstruct [:dts]
-  end
-
-  defmodule Event do
-    defstruct [:dts]
   end
 
   test "queue sorts buffers a lot of buffers from different pads based on buffer dts" do
@@ -344,5 +344,50 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     assert grouped_batch |> Map.values() |> MapSet.new() ==
              MapSet.new([buffers, List.delete_at(buffers, 999)])
+  end
+
+  test "queue returns events and stream formats, even if it cannot return next buffer" do
+    queue = TimestampQueue.new()
+
+    {[], queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 0, payload: ""})
+    {[], queue} = TimestampQueue.push_buffer(queue, :b, %Buffer{dts: 0, payload: ""})
+
+    {[], batch, queue} = TimestampQueue.pop_batch(queue)
+    assert [{pad_ref, {:buffer, _buffer}}] = batch
+
+    queue =
+      Enum.reduce(1..10, queue, fn _i, queue ->
+        TimestampQueue.push_event(queue, pad_ref, %Event{})
+      end)
+
+    {[], batch, queue} = TimestampQueue.pop_batch(queue)
+
+    assert batch == for(_i <- 1..10, do: {pad_ref, {:event, %Event{}}})
+
+    [opposite_pad_ref] = List.delete([:a, :b], pad_ref)
+
+    buffers =
+      [{pad_ref, %Buffer{dts: 10, payload: ""}}] ++
+        Enum.map(1..9, &{opposite_pad_ref, %Buffer{dts: &1, payload: ""}})
+
+    queue =
+      Enum.reduce(buffers, queue, fn {pad, buffer}, queue ->
+        {[], queue} = TimestampQueue.push_buffer(queue, pad, buffer)
+        queue
+      end)
+      |> TimestampQueue.push_end_of_stream(:a)
+      |> TimestampQueue.push_end_of_stream(:b)
+
+    {[], batch, _queue} = TimestampQueue.pop_batch(queue)
+
+    expected_batch =
+      Enum.map(0..9, &{opposite_pad_ref, {:buffer, %Buffer{dts: &1, payload: ""}}})
+      |> Enum.concat([
+        {opposite_pad_ref, :end_of_stream},
+        {pad_ref, {:buffer, %Buffer{dts: 10, payload: ""}}},
+        {pad_ref, :end_of_stream}
+      ])
+
+    assert batch == expected_batch
   end
 end

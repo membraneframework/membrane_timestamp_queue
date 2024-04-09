@@ -37,7 +37,8 @@ defmodule Membrane.TimestampQueue do
             pause_demand_boundary_unit: :buffers | :bytes,
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
-            waiting_on_buffer_from: MapSet.t()
+            registered_pads: MapSet.t(),
+            awaiting_pads: [Pad.ref()]
           }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
@@ -45,7 +46,8 @@ defmodule Membrane.TimestampQueue do
             pause_demand_boundary_unit: :buffers,
             pad_queues: %{},
             pads_heap: Heap.max(),
-            waiting_on_buffer_from: MapSet.new()
+            registered_pads: MapSet.new(),
+            awaiting_pads: []
 
   @typedoc """
   Options passed to #{inspect(__MODULE__)}.new/1.
@@ -88,7 +90,7 @@ defmodule Membrane.TimestampQueue do
   @spec register_pad(t(), Pad.ref()) :: t()
   def register_pad(%__MODULE__{} = timestamp_queue, pad_ref) do
     timestamp_queue
-    |> Map.update!(:waiting_on_buffer_from, &MapSet.put(&1, pad_ref))
+    |> Map.update!(:registered_pads, &MapSet.put(&1, pad_ref))
   end
 
   @doc """
@@ -113,7 +115,8 @@ defmodule Membrane.TimestampQueue do
   def push_buffer(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
     timestamp_queue
     |> push_item(pad_ref, {:buffer, buffer})
-    |> Map.update!(:waiting_on_buffer_from, &MapSet.delete(&1, pad_ref))
+    |> Map.update!(:registered_pads, &MapSet.delete(&1, pad_ref))
+    |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
     |> get_and_update_in([:pad_queues, pad_ref], fn pad_queue ->
       pad_queue
       |> Map.merge(%{
@@ -188,96 +191,41 @@ defmodule Membrane.TimestampQueue do
     timestamp_queue
     |> push_item(pad_ref, :end_of_stream)
     |> put_in([:pad_queues, pad_ref, :end_of_stream?], true)
-    |> Map.update!(:waiting_on_buffer_from, &MapSet.delete(&1, pad_ref))
+    |> Map.update!(:registered_pads, &MapSet.delete(&1, pad_ref))
+    |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
   end
 
   defp push_item(%__MODULE__{} = timestamp_queue, pad_ref, item) do
     timestamp_queue
     |> maybe_update_heap_on_pushing_item(pad_ref, item)
     |> Map.update!(:pad_queues, &Map.put_new(&1, pad_ref, new_pad_queue()))
-    |> update_in(
-      [:pad_queues, pad_ref, :qex],
-      &Qex.push(&1, item)
-    )
+    |> update_in([:pad_queues, pad_ref, :qex], &Qex.push(&1, item))
   end
 
-  # defp maybe_update_heap_on_pushing_item(timestamp_queue, pad_ref, item) do
-  #   if not is_map_key(timestamp_queue.pad_queues, pad_ref) or
-  #        (MapSet.member?(timestamp_queue.waiting_on_buffer_from, pad_ref) and
-  #           match?({:buffer, _buffer}, item)) do
-  #     priority =
-  #       case item do
-  #         {:buffer, _buffer} -> -timestamp_queue.current_queue_time
-  #         _other -> :infinity
-  #       end
-
-  #     timestamp_queue
-  #     |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
-  #   else
-  #     timestamp_queue
-  #   end
-  # end
-
-  # defp maybe_update_heap_on_pushing_item(timestamp_queue, pad_ref, item) do
-  #   cond do
-  #     not is_map_key(timestamp_queue.pad_queues, pad_ref) ->
-  #       priority =
-  #         case item do
-  #           {:buffer, _buffer} -> -timestamp_queue.current_queue_time
-  #           _other -> :infinity
-  #         end
-
-  #       timestamp_queue
-  #       |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
-
-  #   end
-  # end
-
-  # defp maybe_update_heap_on_pushing_item(timestamp_queue, pad_ref, item) when not is_map_key(timestamp_queue.pad_queues, pad_ref) do
-  #   priority =
-  #     case item do
-  #       {:buffer, _buffer} -> -timestamp_queue.current_queue_time
-  #         _other -> :infinity
-  #     end
-
-  #   timestamp_queue
-  #   |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
-  # end
-
   defp maybe_update_heap_on_pushing_item(timestamp_queue, pad_ref, item) do
-    cond do
-      not is_map_key(timestamp_queue.pad_queues, pad_ref) ->
-        priority =
-          case item do
-            {:buffer, _buffer} -> -timestamp_queue.current_queue_time
-            _other -> :infinity
-          end
+    pad_queue = Map.get(timestamp_queue.pad_queues, pad_ref)
 
-        timestamp_queue
-        |> put_in([:pad_queues, pad_ref], new_pad_queue())
-        |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
+    first_item_on_awaiting_pad_qex? =
+      pad_ref in timestamp_queue.awaiting_pads and pad_queue != nil and pad_queue.qex == Qex.new()
 
-      MapSet.member?(timestamp_queue.waiting_on_buffer_from, pad_ref) and
-          get_in(timestamp_queue, [:pad_queues, pad_ref, :qex]) == Qex.new() ->
-        pad_queue = Map.get(timestamp_queue.pad_queues, pad_ref)
+    if first_item_on_awaiting_pad_qex? or not is_map_key(timestamp_queue.pad_queues, pad_ref) do
+      priority =
+        case item do
+          {:buffer, buffer} when first_item_on_awaiting_pad_qex? ->
+            pad_queue = Map.get(timestamp_queue.pad_queues, pad_ref)
+            -buffer_time(buffer, pad_queue)
 
-        priority =
-          case item do
-            {:buffer, buffer} when pad_queue.timestamp_offset != nil ->
-              -buffer_time(buffer, pad_queue)
+          {:buffer, _buffer} ->
+            -timestamp_queue.current_queue_time
 
-            {:buffer, _buffer} ->
-              -timestamp_queue.current_queue_time
+          _other ->
+            :infinity
+        end
 
-            _other ->
-              :infinity
-          end
-
-        timestamp_queue
-        |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
-
-      true ->
-        timestamp_queue
+      timestamp_queue
+      |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
+    else
+      timestamp_queue
     end
   end
 
@@ -343,10 +291,11 @@ defmodule Membrane.TimestampQueue do
   end
 
   defp do_pop_batch(%__MODULE__{} = timestamp_queue, actions_acc \\ [], items_acc \\ []) do
-    waiting? = MapSet.size(timestamp_queue.waiting_on_buffer_from) != 0
+    try_return_buffer? =
+      MapSet.size(timestamp_queue.registered_pads) == 0 and timestamp_queue.awaiting_pads == []
 
     case Heap.root(timestamp_queue.pads_heap) do
-      {_priority, pad_ref} when not waiting? ->
+      {_priority, pad_ref} when try_return_buffer? ->
         pop_buffer_and_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
 
       {:infinity, pad_ref} ->
@@ -378,8 +327,7 @@ defmodule Membrane.TimestampQueue do
       timestamp_queue =
         with %{buffers_number: 0, end_of_stream?: false} <- pad_queue do
           timestamp_queue
-          |> Map.update!(:waiting_on_buffer_from, &MapSet.put(&1, pad_ref))
-          |> Map.update!(:pads_heap, &Heap.pop/1)
+          |> Map.update!(:awaiting_pads, &[pad_ref | &1])
         else
           _pad_queue -> timestamp_queue
         end
@@ -424,21 +372,18 @@ defmodule Membrane.TimestampQueue do
 
         pop_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
 
-      {:empty, _empty_qex} when pad_queue.end_of_stream? or pad_queue.timestamp_offset == nil ->
+      {:empty, _empty_qex} when timestamp_queue.awaiting_pads == [pad_ref] ->
+        # pop heap, recursion to pop_batch
+        timestamp_queue
+        |> Map.update!(:pads_heap, &Heap.pop/1)
+        |> do_pop_batch(actions_acc, items_acc)
+
+      {:empty, _empty_qex} ->
         # cleanup, recursion to pop_batch
 
         timestamp_queue
         |> Map.update!(:pad_queues, &Map.delete(&1, pad_ref))
-        |> Map.update!(:pads_heap, fn heap ->
-          case Heap.root(heap) do
-            {_priority, ^pad_ref} -> Heap.pop(heap)
-            _other -> heap
-          end
-        end)
-        |> do_pop_batch(actions_acc, items_acc)
-
-      {:empty, _empty_qex} ->
-        timestamp_queue
+        |> Map.update!(:pads_heap, &Heap.pop/1)
         |> do_pop_batch(actions_acc, items_acc)
     end
   end
