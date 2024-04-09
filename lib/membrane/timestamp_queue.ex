@@ -276,6 +276,7 @@ defmodule Membrane.TimestampQueue do
 
   A buffer `b` from pad `p` is available, if all pads different than `p`
     - either have a buffer in the queue, that is older than `b`
+    - or haven't ever had any buffer on the queue
     - or have end of stream pushed on the queue.
 
   An item that is not a buffer is considered available if all buffers from the same pad,
