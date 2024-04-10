@@ -236,6 +236,40 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end
   end)
 
+  test "queue returns proper suggested actions when boundary unit is :time" do
+    queue =
+      TimestampQueue.new(
+        pause_demand_boundary: 100,
+        pause_demand_boundary_unit: :time
+      )
+
+    queue_below_boundary =
+      Enum.concat(1..50, 50..100//10)
+      |> Enum.reduce(queue, fn pts, queue ->
+        buffer = %Buffer{pts: pts, payload: ""}
+        assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+        queue
+      end)
+
+    assert {[pause_auto_demand: :input], queue_above_boundary} =
+             TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
+               pts: 101,
+               payload: ""
+             })
+
+    assert {[resume_auto_demand: :input], _batch, _queue} =
+             TimestampQueue.pop_batch(queue_above_boundary)
+
+    assert {[pause_auto_demand: :input], queue_above_boundary} =
+             TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
+               pts: 1000,
+               payload: ""
+             })
+
+    assert {[resume_auto_demand: :input], _batch, _queue} =
+             TimestampQueue.pop_batch(queue_above_boundary)
+  end
+
   test "queue sorts buffers from various pads when they aren't linked in the same moment" do
     iteration_size = 100
     iterations = 100

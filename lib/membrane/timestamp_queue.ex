@@ -21,10 +21,10 @@ defmodule Membrane.TimestampQueue do
           qex: Qex.t(),
           buffers_size: non_neg_integer(),
           buffers_number: non_neg_integer(),
-          paused_demand?: boolean(),
           end_of_stream?: boolean(),
           use_pts?: boolean() | nil,
-          max_timestamp_on_qex: Membrane.Time.t() | nil
+          max_timestamp_on_qex: Membrane.Time.t() | nil,
+          timestamps_qex: Qex.t() | nil
         }
 
   @typedoc """
@@ -34,7 +34,7 @@ defmodule Membrane.TimestampQueue do
   @opaque t :: %__MODULE__{
             current_queue_time: Membrane.Time.t(),
             pause_demand_boundary: pos_integer() | :infinity,
-            pause_demand_boundary_unit: :buffers | :bytes,
+            metric_unit: :buffers | :bytes | :time,
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
             registered_pads: MapSet.t(),
@@ -44,7 +44,7 @@ defmodule Membrane.TimestampQueue do
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
             pause_demand_boundary: :infinity,
-            pause_demand_boundary_unit: :buffers,
+            metric_unit: :buffers,
             pad_queues: %{},
             pads_heap: Heap.max(),
             registered_pads: MapSet.new(),
@@ -57,12 +57,12 @@ defmodule Membrane.TimestampQueue do
   Following options are allowed:
     - `:pause_demand_boundary` - positive integer or `:infinity` (default to `:infinity`). Tells, what
       amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
-    - `:pause_demand_boundary_unit` - `:buffers` or `:bytes` (deafult to `:buffers`). Tells, in which metric
+    - `:pause_demand_boundary_unit` - `:buffers`, `:bytes` or `:time` (deafult to `:buffers`). Tells, in which metric
       `:pause_demand_boundary` is specified.
   """
   @type options :: [
-          pause_demand_boundary: pos_integer() | :infinity,
-          pause_demand_boundary_unit: :buffers | :bytes
+          pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
+          pause_demand_boundary_unit: :buffers | :bytes | :time
         ]
 
   @spec new(options) :: t()
@@ -75,10 +75,7 @@ defmodule Membrane.TimestampQueue do
       )
       |> Enum.sort()
 
-    %__MODULE__{
-      pause_demand_boundary: boundary,
-      pause_demand_boundary_unit: unit
-    }
+    %__MODULE__{pause_demand_boundary: boundary, metric_unit: unit}
   end
 
   @doc """
@@ -120,21 +117,34 @@ defmodule Membrane.TimestampQueue do
     |> Map.update!(:registered_pads, &MapSet.delete(&1, pad_ref))
     |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
     |> get_and_update_in([:pad_queues, pad_ref], fn pad_queue ->
-      pad_queue
-      |> Map.merge(%{
-        buffers_size: pad_queue.buffers_size + buffer_size(timestamp_queue, buffer),
-        buffers_number: pad_queue.buffers_number + 1
-      })
-      |> Map.update!(:timestamp_offset, fn
-        nil -> timestamp_queue.current_queue_time - (buffer.dts || buffer.pts)
-        valid_offset -> valid_offset
-      end)
-      |> Map.update!(:use_pts?, fn
-        nil -> buffer.dts == nil
-        valid_boolean -> valid_boolean
-      end)
-      |> check_timestamps_consistency!(buffer, pad_ref)
-      |> actions_after_pushing_buffer(pad_ref, timestamp_queue.pause_demand_boundary)
+      old_buffers_size = pad_queue.buffers_size
+
+      pad_queue =
+        pad_queue
+        |> Map.update!(:buffers_number, &(&1 - 1))
+        |> Map.update!(:timestamp_offset, fn
+          nil -> timestamp_queue.current_queue_time - (buffer.dts || buffer.pts)
+          valid_offset -> valid_offset
+        end)
+        |> Map.update!(:use_pts?, fn
+          nil -> buffer.dts == nil
+          valid_boolean -> valid_boolean
+        end)
+        |> Map.update!(:timestamps_qex, fn
+          nil when timestamp_queue.metric_unit == :time -> Qex.new()
+          other -> other
+        end)
+        |> increase_buffers_size(buffer, timestamp_queue.metric_unit)
+        |> check_timestamps_consistency!(buffer, pad_ref)
+
+      boundary = timestamp_queue.pause_demand_boundary
+
+      actions =
+        if pad_queue.buffers_size >= boundary and old_buffers_size < boundary,
+          do: [pause_auto_demand: pad_ref],
+          else: []
+
+      {actions, pad_queue}
     end)
   end
 
@@ -244,27 +254,53 @@ defmodule Membrane.TimestampQueue do
       qex: Qex.new(),
       buffers_size: 0,
       buffers_number: 0,
-      paused_demand?: false,
       end_of_stream?: false,
       use_pts?: nil,
       max_timestamp_on_qex: nil,
-      recently_returned_timestamp: nil
+      timestamps_qex: nil
     }
   end
 
-  defp actions_after_pushing_buffer(pad_queue, pad_ref, pause_demand_boundary) do
-    if not pad_queue.paused_demand? and pad_queue.buffers_size >= pause_demand_boundary do
-      {[pause_auto_demand: pad_ref], %{pad_queue | paused_demand?: true}}
-    else
-      {[], pad_queue}
+  defp increase_buffers_size(pad_queue, %Buffer{} = buffer, :time) do
+    new_last_timestamp = buffer_time(buffer, pad_queue)
+
+    case Qex.last(pad_queue.timestamps_qex) do
+      {:value, old_last_timestamp} ->
+        time_interval = new_last_timestamp - old_last_timestamp
+        %{pad_queue | buffers_size: pad_queue.buffers_size + time_interval}
+
+      :empty ->
+        pad_queue
+    end
+    |> Map.update!(:timestamps_qex, &Qex.push(&1, new_last_timestamp))
+  end
+
+  defp increase_buffers_size(pad_queue, _buffer, :buffers),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size + 1}
+
+  defp increase_buffers_size(pad_queue, %Buffer{payload: payload}, :bytes),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size + byte_size(payload)}
+
+
+  defp decrease_buffers_size(pad_queue, _buffer, :time) do
+    {first_timestamp, timestamps_qex} = Qex.pop!(pad_queue.timestamps_qex)
+    pad_queue = %{pad_queue | timestamps_qex: timestamps_qex}
+
+    case Qex.first(timestamps_qex) do
+      {:value, second_timestamp} ->
+        time_interval = second_timestamp - first_timestamp
+        %{pad_queue | buffers_size: pad_queue.buffers_size - time_interval}
+
+      :empty ->
+        pad_queue
     end
   end
 
-  defp buffer_size(%__MODULE__{pause_demand_boundary_unit: :buffers}, _buffer),
-    do: 1
+  defp decrease_buffers_size(pad_queue, _buffer, :buffers),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size - 1}
 
-  defp buffer_size(%__MODULE__{pause_demand_boundary_unit: :bytes}, %Buffer{payload: payload}),
-    do: byte_size(payload)
+  defp decrease_buffers_size(pad_queue, %Buffer{payload: payload}, :bytes),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size - byte_size(payload)}
 
   defp buffer_time(%Buffer{dts: dts}, %{use_pts?: false, timestamp_offset: timestamp_offset}),
     do: dts + timestamp_offset
@@ -328,12 +364,9 @@ defmodule Membrane.TimestampQueue do
     with {{:value, {:buffer, buffer}}, qex} <- Qex.pop(pad_queue.qex) do
       old_buffers_size = pad_queue.buffers_size
 
-      pad_queue = %{
-        pad_queue
-        | qex: qex,
-          buffers_size: old_buffers_size - buffer_size(timestamp_queue, buffer),
-          buffers_number: pad_queue.buffers_number - 1
-      }
+      pad_queue =
+        %{pad_queue | qex: qex, buffers_number: pad_queue.buffers_number - 1}
+        |> decrease_buffers_size(buffer, timestamp_queue.metric_unit)
 
       timestamp_queue =
         with %{buffers_number: 0, end_of_stream?: false} <- pad_queue do
