@@ -393,6 +393,16 @@ defmodule Membrane.TimestampQueue do
     Map.update!(timestamp_queue, :pads_heap, &Heap.push(&1, heap_item))
   end
 
+  @doc """
+  Pops all items in the proper order and closes the queue.
+
+  After being closed, queue is unable handle any new buffer/stream format/event/end of stream.
+
+  The returned value is a suggested actions list, a list of popped buffers and the updated queue.
+
+  Suggested actions list contains `t:Action.resume_auto_demand()` for every pad, that had pasued
+  auto demand before the flush.
+  """
   @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def flush_and_close(%__MODULE__{} = timestamp_queue) do
     %{timestamp_queue | closed?: true, registered_pads: MapSet.new(), awaiting_pads: []}
