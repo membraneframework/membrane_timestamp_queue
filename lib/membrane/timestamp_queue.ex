@@ -214,35 +214,27 @@ defmodule Membrane.TimestampQueue do
 
   defp push_item(%__MODULE__{} = timestamp_queue, pad_ref, item) do
     timestamp_queue
-    |> maybe_update_heap_on_pushing_item(pad_ref, item)
+    |> maybe_push_pad_on_heap_on_new_item(pad_ref, item)
     |> Map.update!(:pad_queues, &Map.put_new(&1, pad_ref, new_pad_queue()))
     |> update_in([:pad_queues, pad_ref, :qex], &Qex.push(&1, item))
   end
 
-  defp maybe_update_heap_on_pushing_item(timestamp_queue, pad_ref, item) do
+  defp maybe_push_pad_on_heap_on_new_item(timestamp_queue, pad_ref, item) do
     pad_queue = Map.get(timestamp_queue.pad_queues, pad_ref)
+    empty_qex = Qex.new()
 
-    first_item_on_awaiting_pad_qex? =
-      pad_ref in timestamp_queue.awaiting_pads and pad_queue != nil and pad_queue.qex == Qex.new()
+    case {item, pad_queue} do
+      {{:buffer, _buffer}, nil} ->
+        push_pad_on_heap(timestamp_queue, pad_ref, -timestamp_queue.current_queue_time)
 
-    if first_item_on_awaiting_pad_qex? or not is_map_key(timestamp_queue.pad_queues, pad_ref) do
-      priority =
-        case item do
-          {:buffer, buffer} when first_item_on_awaiting_pad_qex? ->
-            pad_queue = Map.get(timestamp_queue.pad_queues, pad_ref)
-            -buffer_time(buffer, pad_queue)
+      {{:buffer, buffer}, pad_queue} when pad_queue.qex == empty_qex ->
+        push_pad_on_heap(timestamp_queue, pad_ref, -buffer_time(buffer, pad_queue))
 
-          {:buffer, _buffer} ->
-            -timestamp_queue.current_queue_time
+      {_non_buffer, pad_queue} when pad_queue == nil or pad_queue.qex == empty_qex ->
+        push_pad_on_heap(timestamp_queue, pad_ref, :infinity)
 
-          _other ->
-            :infinity
-        end
-
-      timestamp_queue
-      |> Map.update!(:pads_heap, &Heap.push(&1, {priority, pad_ref}))
-    else
-      timestamp_queue
+      _else ->
+        timestamp_queue
     end
   end
 
@@ -296,8 +288,8 @@ defmodule Membrane.TimestampQueue do
     - or haven't ever had any buffer on the queue
     - or have end of stream pushed on the queue.
 
-  An item that is not a buffer is considered available if all buffers from the same pad,
-  which are newer than the item are available.
+  An item other than a buffer is considered available if all newer buffers on the same pad are
+  available.
 
   The returned value is a suggested actions list, a list of popped buffers and the updated queue.
 
@@ -307,31 +299,30 @@ defmodule Membrane.TimestampQueue do
   """
   @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def pop_batch(%__MODULE__{} = timestamp_queue) do
-    do_pop_batch(timestamp_queue)
+    do_pop_batch(timestamp_queue, [], [])
   end
 
-  defp do_pop_batch(%__MODULE__{} = timestamp_queue, actions_acc \\ [], items_acc \\ []) do
+  defp do_pop_batch(%__MODULE__{} = timestamp_queue, actions_acc, items_acc) do
     try_return_buffer? =
       MapSet.size(timestamp_queue.registered_pads) == 0 and timestamp_queue.awaiting_pads == []
 
     case Heap.root(timestamp_queue.pads_heap) do
-      {_priority, pad_ref} when try_return_buffer? ->
-        pop_buffer_and_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
+      {priority, pad_ref} when try_return_buffer? or priority == :infinity ->
+        {actions, items, timestamp_queue} =
+          timestamp_queue
+          |> Map.update!(:pads_heap, &Heap.pop/1)
+          |> pop_buffer_and_following_items(pad_ref)
 
-      {:infinity, pad_ref} ->
-        pop_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
+        do_pop_batch(timestamp_queue, actions ++ actions_acc, items ++ items_acc)
 
       _other ->
         {actions_acc, Enum.reverse(items_acc), timestamp_queue}
     end
   end
 
-  defp pop_buffer_and_following_items(
-         %__MODULE__{} = timestamp_queue,
-         pad_ref,
-         actions_acc,
-         items_acc
-       ) do
+  @spec pop_buffer_and_following_items(t(), Pad.ref()) ::
+          {[Action.resume_auto_demand()], [popped_value()], t()}
+  defp pop_buffer_and_following_items(%__MODULE__{} = timestamp_queue, pad_ref) do
     pad_queue = timestamp_queue.pad_queues |> Map.get(pad_ref)
 
     with {{:value, {:buffer, buffer}}, qex} <- Qex.pop(pad_queue.qex) do
@@ -359,52 +350,49 @@ defmodule Membrane.TimestampQueue do
 
       boundary = timestamp_queue.pause_demand_boundary
 
-      actions_acc =
+      actions =
         if pad_queue.buffers_size < boundary and old_buffers_size >= boundary,
-          do: [resume_auto_demand: pad_ref] ++ actions_acc,
-          else: actions_acc
+          do: [resume_auto_demand: pad_ref],
+          else: []
 
-      items_acc = [{pad_ref, {:buffer, buffer}}] ++ items_acc
+      items = [{pad_ref, {:buffer, buffer}}]
 
-      pop_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
+      pop_following_items(timestamp_queue, pad_ref, actions, items)
     else
-      _other -> pop_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
+      _other -> pop_following_items(timestamp_queue, pad_ref, [], [])
     end
   end
 
+  @spec pop_following_items(t(), Pad.ref(), [Action.resume_auto_demand()], [popped_value()]) ::
+          {[Action.resume_auto_demand()], [popped_value()], t()}
   defp pop_following_items(%__MODULE__{} = timestamp_queue, pad_ref, actions_acc, items_acc) do
     pad_queue = timestamp_queue.pad_queues |> Map.get(pad_ref)
 
     case Qex.pop(pad_queue.qex) do
       {{:value, {:buffer, buffer}}, _qex} ->
-        # update heap, ignore buffer, recursion to pop_batch
         new_priority = -buffer_time(buffer, pad_queue)
-        heap_item = {new_priority, pad_ref}
+        timestamp_queue = push_pad_on_heap(timestamp_queue, pad_ref, new_priority)
 
-        timestamp_queue
-        |> Map.update!(:pads_heap, &(&1 |> Heap.pop() |> Heap.push(heap_item)))
-        |> do_pop_batch(actions_acc, items_acc)
+        {actions_acc, items_acc, timestamp_queue}
 
       {{:value, item}, qex} ->
-        # add to acc, recursion self
         timestamp_queue = put_in(timestamp_queue, [:pad_queues, pad_ref, :qex], qex)
         items_acc = [{pad_ref, item}] ++ items_acc
 
         pop_following_items(timestamp_queue, pad_ref, actions_acc, items_acc)
 
       {:empty, _empty_qex} when timestamp_queue.awaiting_pads == [pad_ref] ->
-        # pop heap, recursion to pop_batch
-        timestamp_queue
-        |> Map.update!(:pads_heap, &Heap.pop/1)
-        |> do_pop_batch(actions_acc, items_acc)
+        {actions_acc, items_acc, timestamp_queue}
 
       {:empty, _empty_qex} ->
-        # cleanup, recursion to pop_batch
-        timestamp_queue
-        |> Map.update!(:pad_queues, &Map.delete(&1, pad_ref))
-        |> Map.update!(:pads_heap, &Heap.pop/1)
-        |> do_pop_batch(actions_acc, items_acc)
+        {_pad_queue, timestamp_queue} = pop_in(timestamp_queue, [:pad_queues, pad_ref])
+        {actions_acc, items_acc, timestamp_queue}
     end
+  end
+
+  defp push_pad_on_heap(timestamp_queue, pad_ref, priority) do
+    heap_item = {priority, pad_ref}
+    Map.update!(timestamp_queue, :pads_heap, &Heap.push(&1, heap_item))
   end
 
   @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
