@@ -3,6 +3,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
   require Membrane.Pad, as: Pad
 
+  alias Membrane.StreamFormat
   alias Membrane.Buffer
   alias Membrane.TimestampQueue
 
@@ -389,5 +390,48 @@ defmodule Membrane.TimestampQueue.UnitTest do
       ])
 
     assert batch == expected_batch
+  end
+
+  test "flush_and_close/1 works like pop_batch/1 on a queue with end of stream on every pad" do
+    push_functions = [
+      fn queue, pad_ref, _i -> TimestampQueue.push_event(queue, pad_ref, %Event{}) end,
+      fn queue, pad_ref, _i ->
+        TimestampQueue.push_stream_format(queue, pad_ref, %StreamFormat{})
+      end,
+      fn queue, pad_ref, i ->
+        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, %Buffer{dts: i, payload: ""})
+        queue
+      end
+    ]
+
+    for _repetition <- 1..10 do
+      full_queue =
+        Enum.reduce(1..10_000, TimestampQueue.new(), fn i, queue ->
+          pad_ref = Pad.ref(:input, Enum.random(1..100))
+          Enum.random(push_functions) |> apply([queue, pad_ref, i])
+        end)
+
+      {[], flush_batch, closed_queue} = TimestampQueue.flush_and_close(full_queue)
+
+      {[], pop_batch, popped_queue} =
+        Enum.reduce(1..100, full_queue, fn i, queue ->
+          TimestampQueue.push_end_of_stream(queue, Pad.ref(:input, i))
+        end)
+        |> TimestampQueue.pop_batch()
+
+      expected_flush_batch =
+        pop_batch
+        |> Enum.reject(&match?({_pad_ref, :end_of_stream}, &1))
+
+      assert flush_batch == expected_flush_batch
+
+      assert closed_queue.pads_heap == popped_queue.pads_heap
+      assert closed_queue.pad_queues == popped_queue.pad_queues
+
+      assert_raise RuntimeError, ~r/Unable to push .* already closed/, fn ->
+        buffer = %Buffer{dts: 10_001, payload: ""}
+        TimestampQueue.push_buffer(closed_queue, Pad.ref(:input, 0), buffer)
+      end
+    end
   end
 end

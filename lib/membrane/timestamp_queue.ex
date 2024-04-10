@@ -337,16 +337,14 @@ defmodule Membrane.TimestampQueue do
 
       timestamp_queue =
         with %{buffers_number: 0, end_of_stream?: false} <- pad_queue do
-          timestamp_queue
-          |> Map.update!(:awaiting_pads, &[pad_ref | &1])
+          Map.update!(timestamp_queue, :awaiting_pads, &[pad_ref | &1])
         else
           _pad_queue -> timestamp_queue
         end
 
       timestamp_queue =
-        timestamp_queue
+        %{timestamp_queue | current_queue_time: buffer_time(buffer, pad_queue)}
         |> put_in([:pad_queues, pad_ref], pad_queue)
-        |> Map.put(:current_queue_time, buffer_time(buffer, pad_queue))
 
       boundary = timestamp_queue.pause_demand_boundary
 
@@ -397,10 +395,13 @@ defmodule Membrane.TimestampQueue do
 
   @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def flush_and_close(%__MODULE__{} = timestamp_queue) do
-    %{timestamp_queue | closed?: true}
-    |> Map.update!(:pad_queues, &Map.new(&1, fn {pad_ref, data} ->
-      {pad_ref, %{data | end_of_stream?: true}}
-    end))
+    %{timestamp_queue | closed?: true, registered_pads: MapSet.new(), awaiting_pads: []}
+    |> Map.update!(
+      :pad_queues,
+      &Map.new(&1, fn {pad_ref, data} ->
+        {pad_ref, %{data | end_of_stream?: true}}
+      end)
+    )
     |> pop_batch()
   end
 end
