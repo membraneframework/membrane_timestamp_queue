@@ -3,7 +3,6 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
   require Membrane.Pad, as: Pad
 
-  alias Membrane.StreamFormat
   alias Membrane.Buffer
   alias Membrane.TimestampQueue
 
