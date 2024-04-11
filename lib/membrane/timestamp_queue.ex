@@ -55,8 +55,8 @@ defmodule Membrane.TimestampQueue do
   Options passed to #{inspect(__MODULE__)}.new/1.
 
   Following options are allowed:
-    - `:pause_demand_boundary` - positive integer or `:infinity` (default to `:infinity`). Tells, what
-      amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
+    - `:pause_demand_boundary` - positive integer, `t:Membrane.Time.t()` or `:infinity` (default to `:infinity`). Tells,
+      what amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
     - `:pause_demand_boundary_unit` - `:buffers`, `:bytes` or `:time` (deafult to `:buffers`). Tells, in which metric
       `:pause_demand_boundary` is specified.
   """
@@ -98,7 +98,7 @@ defmodule Membrane.TimestampQueue do
   Returns a suggested actions list and the updated queue.
 
   If amount of buffers associated with specified pad in the queue just exceded
-  `pause_demand_boundary`, the suggested actions list contains `t:Action.pause_auto_demand()`
+  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.pause_auto_demand()`
   action, otherwise it is equal an empty list.
 
   Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
@@ -330,7 +330,7 @@ defmodule Membrane.TimestampQueue do
   The returned value is a suggested actions list, a list of popped buffers and the updated queue.
 
   If the amount of buffers associated with any pad in the queue falls below the
-  `pause_demand_boundary`, the suggested actions list contains `t:Action.resume_auto_demand()`
+  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.resume_auto_demand()`
   actions, otherwise it is an empty list.
   """
   @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
@@ -434,8 +434,8 @@ defmodule Membrane.TimestampQueue do
 
   The returned value is a suggested actions list, a list of popped buffers and the updated queue.
 
-  Suggested actions list contains `t:Action.resume_auto_demand()` for every pad, that had pasued
-  auto demand before the flush.
+  Suggested actions list contains `t:Membrane.Action.resume_auto_demand()` for every pad, that had
+  pasued auto demand before the flush.
   """
   @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def flush_and_close(%__MODULE__{} = timestamp_queue) do
