@@ -281,7 +281,6 @@ defmodule Membrane.TimestampQueue do
   defp increase_buffers_size(pad_queue, %Buffer{payload: payload}, :bytes),
     do: %{pad_queue | buffers_size: pad_queue.buffers_size + byte_size(payload)}
 
-
   defp decrease_buffers_size(pad_queue, _buffer, :time) do
     {first_timestamp, timestamps_qex} = Qex.pop!(pad_queue.timestamps_qex)
     pad_queue = %{pad_queue | timestamps_qex: timestamps_qex}
@@ -387,7 +386,6 @@ defmodule Membrane.TimestampQueue do
           else: []
 
       items = [{pad_ref, {:buffer, buffer}}]
-
 
       pop_following_items(timestamp_queue, pad_ref, actions, items)
     else

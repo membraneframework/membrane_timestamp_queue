@@ -236,7 +236,6 @@ defmodule Membrane.TimestampQueue.UnitTest do
                  TimestampQueue.pop_batch(queue)
 
         queue
-
       end)
     end
   end)
