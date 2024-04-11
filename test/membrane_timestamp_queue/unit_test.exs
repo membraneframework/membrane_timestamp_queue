@@ -210,29 +210,34 @@ defmodule Membrane.TimestampQueue.UnitTest do
           pause_demand_boundary_unit: unit
         )
 
-      queue =
-        1..(boundary_in_buff_no - 1)
-        |> Enum.reduce(queue, fn _i, queue ->
-          assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
-          queue
-        end)
+      Enum.reduce(1..10, queue, fn _iteration, queue ->
+        queue =
+          1..(boundary_in_buff_no - 1)
+          |> Enum.reduce(queue, fn _i, queue ->
+            assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+            queue
+          end)
 
-      assert {[pause_auto_demand: :input], queue} =
-               TimestampQueue.push_buffer(queue, :input, buffer)
+        assert {[pause_auto_demand: :input], queue} =
+                 TimestampQueue.push_buffer(queue, :input, buffer)
 
-      queue =
-        1..(boundary_in_buff_no - 1)
-        |> Enum.reduce(queue, fn _i, queue ->
-          assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
-          queue
-        end)
+        queue =
+          1..(boundary_in_buff_no - 1)
+          |> Enum.reduce(queue, fn _i, queue ->
+            assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+            queue
+          end)
 
-      pop_item = {:input, {:buffer, buffer}}
+        pop_item = {:input, {:buffer, buffer}}
 
-      expected_batch = for _i <- 1..(2 * boundary_in_buff_no - 1), do: pop_item
+        expected_batch = for _i <- 1..(2 * boundary_in_buff_no - 1), do: pop_item
 
-      assert {[resume_auto_demand: :input], ^expected_batch, _queue} =
-               TimestampQueue.pop_batch(queue)
+        assert {[resume_auto_demand: :input], ^expected_batch, queue} =
+                 TimestampQueue.pop_batch(queue)
+
+        queue
+
+      end)
     end
   end)
 
@@ -243,31 +248,37 @@ defmodule Membrane.TimestampQueue.UnitTest do
         pause_demand_boundary_unit: :time
       )
 
-    queue_below_boundary =
-      Enum.concat(1..50, 50..100//10)
-      |> Enum.reduce(queue, fn pts, queue ->
-        buffer = %Buffer{pts: pts, payload: ""}
-        assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
-        queue
-      end)
+    Enum.reduce(1..10, queue, fn iteration, queue ->
+      pts_offset = iteration * 100_000
 
-    assert {[pause_auto_demand: :input], queue_above_boundary} =
-             TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
-               pts: 101,
-               payload: ""
-             })
+      queue_below_boundary =
+        Enum.concat(1..50, 50..100//10)
+        |> Enum.reduce(queue, fn i, queue ->
+          buffer = %Buffer{pts: pts_offset + i, payload: ""}
+          assert {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+          queue
+        end)
 
-    assert {[resume_auto_demand: :input], _batch, _queue} =
-             TimestampQueue.pop_batch(queue_above_boundary)
+      assert {[pause_auto_demand: :input], queue_above_boundary} =
+               TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
+                 pts: pts_offset + 101,
+                 payload: ""
+               })
 
-    assert {[pause_auto_demand: :input], queue_above_boundary} =
-             TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
-               pts: 1000,
-               payload: ""
-             })
+      assert {[resume_auto_demand: :input], _batch, _queue} =
+               TimestampQueue.pop_batch(queue_above_boundary)
 
-    assert {[resume_auto_demand: :input], _batch, _queue} =
-             TimestampQueue.pop_batch(queue_above_boundary)
+      assert {[pause_auto_demand: :input], queue_above_boundary} =
+               TimestampQueue.push_buffer(queue_below_boundary, :input, %Buffer{
+                 pts: pts_offset + 1000,
+                 payload: ""
+               })
+
+      assert {[resume_auto_demand: :input], _batch, queue} =
+               TimestampQueue.pop_batch(queue_above_boundary)
+
+      queue
+    end)
   end
 
   test "queue sorts buffers from various pads when they aren't linked in the same moment" do

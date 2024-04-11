@@ -121,7 +121,7 @@ defmodule Membrane.TimestampQueue do
 
       pad_queue =
         pad_queue
-        |> Map.update!(:buffers_number, &(&1 - 1))
+        |> Map.update!(:buffers_number, &(&1 + 1))
         |> Map.update!(:timestamp_offset, fn
           nil -> timestamp_queue.current_queue_time - (buffer.dts || buffer.pts)
           valid_offset -> valid_offset
@@ -387,6 +387,7 @@ defmodule Membrane.TimestampQueue do
           else: []
 
       items = [{pad_ref, {:buffer, buffer}}]
+
 
       pop_following_items(timestamp_queue, pad_ref, actions, items)
     else
