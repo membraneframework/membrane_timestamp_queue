@@ -81,7 +81,7 @@ defmodule Membrane.TimestampQueue do
   @doc """
   Registers an input pad in the queue without pushing anything on that pad.
 
-  Once a pad is registered, the `pop_batch/3` function won't return buffers
+  Once a pad is registered, the `pop_available_items/3` function won't return buffers
   until a `buffer` or `end_of_stream` is available on the registered pad.
 
   Pushing a buffer on an unregistered pad automatically registers it.
@@ -326,18 +326,18 @@ defmodule Membrane.TimestampQueue do
   An item other than a buffer is considered available if all newer buffers on the same pad are
   available.
 
-  The returned value is a suggested actions list, a list of popped buffers and the updated queue.
+  The returned value is a suggested actions list, a list of popped items and the updated queue.
 
   If the amount of buffers associated with any pad in the queue falls below the
   `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.resume_auto_demand()`
   actions, otherwise it is an empty list.
   """
-  @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
-  def pop_batch(%__MODULE__{} = timestamp_queue) do
-    do_pop_batch(timestamp_queue, [], [])
+  @spec pop_available_items(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
+  def pop_available_items(%__MODULE__{} = timestamp_queue) do
+    do_pop_available_items(timestamp_queue, [], [])
   end
 
-  defp do_pop_batch(%__MODULE__{} = timestamp_queue, actions_acc, items_acc) do
+  defp do_pop_available_items(%__MODULE__{} = timestamp_queue, actions_acc, items_acc) do
     try_return_buffer? =
       MapSet.size(timestamp_queue.registered_pads) == 0 and timestamp_queue.awaiting_pads == []
 
@@ -348,7 +348,7 @@ defmodule Membrane.TimestampQueue do
           |> Map.update!(:pads_heap, &Heap.pop/1)
           |> pop_buffer_and_following_items(pad_ref)
 
-        do_pop_batch(timestamp_queue, actions ++ actions_acc, items ++ items_acc)
+        do_pop_available_items(timestamp_queue, actions ++ actions_acc, items ++ items_acc)
 
       _other ->
         {actions_acc, Enum.reverse(items_acc), timestamp_queue}
@@ -444,6 +444,6 @@ defmodule Membrane.TimestampQueue do
         {pad_ref, %{data | end_of_stream?: true}}
       end)
     )
-    |> pop_batch()
+    |> pop_available_items()
   end
 end
