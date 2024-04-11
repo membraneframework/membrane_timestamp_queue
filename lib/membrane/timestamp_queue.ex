@@ -1,3 +1,20 @@
+# Koncepcja jest taka:
+# TQ trzyma HQ oraz chunker i mape pads info zawierajaca info o buffers_size w calej strukturze
+# HQ robi to co TQ teraz minus suggested actions
+# chunker dzieli rzeczy na chunki
+# flow jest takie:
+# - input: update pads_info, generacja suggested actions, wrzucenie itemow do HQ
+# - gdzies pomiedzy: przerzucenie z HQ do chunkera
+# - output: wyciagniecie itemow z chunkera, update pads info i generacja suggested actions
+# - output gdy nie ma chunkowania: pomijasz chunker i po prostu wyciagasz z HQ
+
+# koncepcja 2.
+# dopisujesz chunker i go trzymasz
+# dopisujesz nowa funkcje, ala handle outgoing item, i w zaleznosci czy korzystasz z chunkera czy nie to w odpowiednim miejscu to
+# ta funkcja generuje odpowiedn SA i moze byc wywolana w odpowiednim miejscu
+
+# popytaj jak w core rzeczy chodzily szybciej :)
+
 defmodule Membrane.TimestampQueue do
   @moduledoc """
   Implementation of a queue, that accepts:
@@ -12,6 +29,8 @@ defmodule Membrane.TimestampQueue do
   """
 
   use Bunch.Access
+
+  alias __MODULE__.Chunker
 
   alias Membrane.{Buffer, Event, Pad, StreamFormat}
   alias Membrane.Element.Action
@@ -39,7 +58,8 @@ defmodule Membrane.TimestampQueue do
             pads_heap: Heap.t(),
             registered_pads: MapSet.t(),
             awaiting_pads: [Pad.ref()],
-            closed?: boolean()
+            closed?: boolean(),
+            chunker: Chunker.t()
           }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
@@ -49,7 +69,8 @@ defmodule Membrane.TimestampQueue do
             pads_heap: Heap.max(),
             registered_pads: MapSet.new(),
             awaiting_pads: [],
-            closed?: false
+            closed?: false,
+            chunker: nil
 
   @typedoc """
   Options passed to #{inspect(__MODULE__)}.new/1.
@@ -62,14 +83,16 @@ defmodule Membrane.TimestampQueue do
   """
   @type options :: [
           pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
-          pause_demand_boundary_unit: :buffers | :bytes | :time
+          pause_demand_boundary_unit: :buffers | :bytes | :time,
+          chunk_size: Membrane.Time.t()
         ]
 
   @spec new(options) :: t()
   def new(options \\ []) do
-    [pause_demand_boundary: boundary, pause_demand_boundary_unit: unit] =
+    [chunk_size: _chunk_size, pause_demand_boundary: boundary, pause_demand_boundary_unit: unit] =
       options
       |> Keyword.validate!(
+        chunk_size: nil,
         pause_demand_boundary: :infinity,
         pause_demand_boundary_unit: :buffers
       )
