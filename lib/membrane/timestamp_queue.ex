@@ -362,6 +362,12 @@ defmodule Membrane.TimestampQueue do
     {actions, items, timestamp_queue}
   end
 
+  @spec push_buffer_and_pop_available_items(t(), Pad.ref(), Buffer.t()) ::
+          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
+  def push_buffer_and_pop_available_items(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
+    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_available_items/1)
+  end
+
   @spec pop_chunk(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
   def pop_chunk(%__MODULE__{chunk_size: nil}) do
     raise "dupa"
@@ -379,6 +385,12 @@ defmodule Membrane.TimestampQueue do
       Map.update!(timestamp_queue, :next_chunk_boundary, &(&1 + timestamp_queue.chunk_size))
 
     {actions, items, timestamp_queue}
+  end
+
+  @spec push_buffer_and_pop_chunk(t(), Pad.ref(), Buffer.t()) ::
+          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
+  def push_buffer_and_pop_chunk(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
+    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_chunk/1)
   end
 
   defp do_pop(%__MODULE__{} = timestamp_queue, actions_acc, items_acc, pop_chunk?) do
@@ -472,6 +484,22 @@ defmodule Membrane.TimestampQueue do
         {_pad_queue, timestamp_queue} = pop_in(timestamp_queue, [:pad_queues, pad_ref])
         {actions_acc, items_acc, timestamp_queue}
     end
+  end
+
+  defp push_buffer_and_pop(timestamp_queue, pad_ref, buffer, pop_fun) do
+    {maybe_pause, timestamp_queue} = push_buffer(timestamp_queue, pad_ref, buffer)
+    {maybe_resume, items, timestamp_queue} = pop_fun.(timestamp_queue)
+
+    actions =
+      with [pause_auto_demand: pad_ref] <- maybe_pause,
+           index when is_integer(index) <-
+             Enum.find_index(maybe_resume, &(&1 == {:resume_auto_demand, pad_ref})) do
+        List.delete_at(maybe_resume, index)
+      else
+        _other -> maybe_pause ++ maybe_resume
+      end
+
+    {actions, items, timestamp_queue}
   end
 
   defp push_pad_on_heap(timestamp_queue, pad_ref, priority) do
