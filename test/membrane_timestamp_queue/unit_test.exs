@@ -477,4 +477,8 @@ defmodule Membrane.TimestampQueue.UnitTest do
       end
     end
   end
+
+  # test "pop_chunked/1 returns properly chunked buffers" do
+  #   queue = TimestampQueue.new(chunk_size)
+  # end
 end

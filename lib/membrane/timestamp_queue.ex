@@ -16,7 +16,7 @@ defmodule Membrane.TimestampQueue do
   alias Membrane.{Buffer, Event, Pad, StreamFormat}
   alias Membrane.Element.Action
 
-  @type pad_queue :: %{
+  @typep pad_queue :: %{
           timestamp_offset: integer(),
           qex: Qex.t(),
           buffers_size: non_neg_integer(),
@@ -65,6 +65,8 @@ defmodule Membrane.TimestampQueue do
       what amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
     - `:pause_demand_boundary_unit` - `:buffers`, `:bytes` or `:time` (deafult to `:buffers`). Tells, in which metric
       `:pause_demand_boundary` is specified.
+    - `:chunk_size` - `Membrane.Time.t()`. Specifies how long the fragments returned by
+      `#{inspect(__MODULE__)}.pop_chunked/1` will be approximately.
   """
   @type options :: [
           pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
@@ -105,7 +107,7 @@ defmodule Membrane.TimestampQueue do
 
   Returns a suggested actions list and the updated queue.
 
-  If amount of buffers associated with specified pad in the queue just exceded
+  If the amount of buffers associated with the specified pad in the queue just exceded
   `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.pause_auto_demand()`
   action, otherwise it is equal an empty list.
 
@@ -362,35 +364,111 @@ defmodule Membrane.TimestampQueue do
     {actions, items, timestamp_queue}
   end
 
+  @doc """
+  Pushes a buffer and pops items from the queue while they are available.
+
+  Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
+
+  A buffer `b` from pad `p` is available, if all pads different than `p`
+    - either have a buffer in the queue, that is older than `b`
+    - or haven't ever had any buffer on the queue
+    - or have end of stream pushed on the queue.
+
+  An item other than a buffer is considered available if all newer buffers on the same pad are
+  available.
+
+  The returned value is a suggested actions list, a list of popped items and the updated queue.
+
+  If the amount of buffers associated with any pad in the queue
+   - falls below the `pause_demand_boundary`, the suggested actions list contains
+     `t:Membrane.Action.resume_auto_demand()` actions
+   - rises above the `pause_demand_boundary`, the suggested actions list contains
+     `t:Membrane.Action.pause_auto_demand()` action.
+  """
   @spec push_buffer_and_pop_available_items(t(), Pad.ref(), Buffer.t()) ::
           {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
   def push_buffer_and_pop_available_items(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
     push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_available_items/1)
   end
 
-  @spec pop_chunk(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
-  def pop_chunk(%__MODULE__{chunk_size: nil}) do
-    raise "dupa"
+  @type chunk :: [popped_value()]
+
+  @doc """
+  Pops chunked items from the queue while there are enough available items, to create a chunk.
+
+  If there are some available items in the queue, but there are not enough of them to create
+  a chunk, it won't be created.
+
+  A buffer `b` from pad `p` is available, if all pads different than `p`
+    - either have a buffer in the queue, that is older than `b`
+    - or haven't ever had any buffer on the queue
+    - or have end of stream pushed on the queue.
+
+  An item other than a buffer is considered available if all newer buffers on the same pad are
+  available.
+
+  The returned value is a suggested actions list, a list of chunks of popped items and the updated
+  queue.
+
+  If the amount of buffers associated with any pad in the queue falls below the
+  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.resume_auto_demand()`
+  actions, otherwise it is an empty list.
+  """
+  @spec pop_chunked(t()) :: {[Action.resume_auto_demand()], [chunk()], t()}
+  def pop_chunked(%__MODULE__{chunk_size: nil}) do
+    raise """
+    Cannot invoke function #{inspect(__MODULE__)}.pop_chunked/1 on a queue, that has :chunk_size field \
+    set to nil. You can set this field by passing {:chunk_size, some_membrane_time} option to \
+    #{inspect(__MODULE__)}.new/1.
+    """
   end
 
-  def pop_chunk(%__MODULE__{} = timestamp_queue)
+  def pop_chunked(%__MODULE__{} = timestamp_queue)
       when timestamp_queue.max_time_in_queues < timestamp_queue.next_chunk_boundary do
     {[], [], timestamp_queue}
   end
 
-  def pop_chunk(%__MODULE__{} = timestamp_queue) do
-    {actions, items, timestamp_queue} = do_pop(timestamp_queue, [], [], true)
+  def pop_chunked(%__MODULE__{} = timestamp_queue) do
+    {actions, chunk, timestamp_queue} = do_pop(timestamp_queue, [], [], true)
 
     timestamp_queue =
       Map.update!(timestamp_queue, :next_chunk_boundary, &(&1 + timestamp_queue.chunk_size))
 
-    {actions, items, timestamp_queue}
+    {next_actions, chunks, timestamp_queue} = pop_chunked(timestamp_queue)
+
+    {actions ++ next_actions, [chunk] ++ chunks, timestamp_queue}
   end
 
-  @spec push_buffer_and_pop_chunk(t(), Pad.ref(), Buffer.t()) ::
+  @doc """
+  Pushes a buffer and pops chunked items from the queue, while there are enough available items,
+  to create a chunk.
+
+  Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
+
+  If there are some available items in the queue, but there are not enough of them to create
+  a chunk, it won't be created.
+
+  A buffer `b` from pad `p` is available, if all pads different than `p`
+    - either have a buffer in the queue, that is older than `b`
+    - or haven't ever had any buffer on the queue
+    - or have end of stream pushed on the queue.
+
+  An item other than a buffer is considered available if all newer buffers on the same pad are
+  available.
+
+  The returned value is a suggested actions list, a list of chunks of popped items and the updated
+  queue.
+
+  If the amount of buffers associated with any pad in the queue
+   - falls below the `pause_demand_boundary`, the suggested actions list contains
+     `t:Membrane.Action.resume_auto_demand()` actions
+   - rises above the `pause_demand_boundary`, the suggested actions list contains
+     `t:Membrane.Action.pause_auto_demand()` action.
+  """
+  @spec push_buffer_and_pop_chunked(t(), Pad.ref(), Buffer.t()) ::
           {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
-  def push_buffer_and_pop_chunk(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
-    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_chunk/1)
+  def push_buffer_and_pop_chunked(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
+    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_chunked/1)
   end
 
   defp do_pop(%__MODULE__{} = timestamp_queue, actions_acc, items_acc, pop_chunk?) do
