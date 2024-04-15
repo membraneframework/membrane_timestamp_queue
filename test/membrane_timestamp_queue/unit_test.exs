@@ -478,7 +478,38 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end
   end
 
-  # test "pop_chunked/1 returns properly chunked buffers" do
-  #   queue = TimestampQueue.new(chunk_size)
-  # end
+  test "pop_chunked/1 returns properly chunked buffers from a single pad" do
+    overbound = Membrane.Time.seconds(10)
+    step = Membrane.Time.millisecond()
+    chunk_duration = Membrane.Time.second()
+
+    queue = TimestampQueue.new(chunk_duration: chunk_duration)
+
+    buffers =
+      1..overbound//step
+      |> Enum.map(&%Buffer{pts: &1, payload: ""})
+
+    {[], queue} =
+      buffers
+      |> Enum.reduce(queue, fn buffer, queue ->
+        {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+        queue
+      end)
+      |> TimestampQueue.push_buffer(:input, %Buffer{
+        pts: overbound + Membrane.Time.nanosecond(),
+        payload: ""
+      })
+
+    {[], given_chunks, _queue} = TimestampQueue.pop_chunked(queue)
+
+    expected_chunks =
+      buffers
+      |> Enum.group_by(&((&1.pts / chunk_duration) |> trunc()))
+      |> Enum.sort()
+      |> Enum.map(fn {_sec, chunk} ->
+        Enum.map(chunk, &{:input, {:buffer, &1}})
+      end)
+
+    assert given_chunks == expected_chunks
+  end
 end
