@@ -443,20 +443,34 @@ defmodule Membrane.TimestampQueue do
     """
   end
 
-  def pop_chunked(%__MODULE__{} = timestamp_queue)
-      when timestamp_queue.max_time_in_queues < timestamp_queue.next_chunk_boundary do
-    {[], [], timestamp_queue}
+  def pop_chunked(%__MODULE__{} = timestamp_queue) do
+    min_max_time =
+      timestamp_queue.pad_queues
+      |> Enum.reduce(:infinity, fn
+        {_pad_ref, %{end_of_stream?: true}}, min_max_time ->
+          min_max_time
+
+        {_pad_ref, %{max_timestamp_on_qex: max_ts, timestamp_offset: offset}}, min_max_time ->
+          min(min_max_time, max_ts + offset)
+      end)
+
+    do_pop_chunked(timestamp_queue, min_max_time)
   end
 
-  def pop_chunked(%__MODULE__{} = timestamp_queue) do
-    {actions, chunk, timestamp_queue} = do_pop(timestamp_queue, [], [], true)
+  defp do_pop_chunked(timestamp_queue, min_max_time) do
+    if min_max_time >= timestamp_queue.next_chunk_boundary and
+         (min_max_time != :infinity or timestamp_queue.pad_queues != %{}) do
+      {actions, chunk, timestamp_queue} = do_pop(timestamp_queue, [], [], true)
 
-    {next_actions, chunks, timestamp_queue} =
-      %{timestamp_queue | chunk_full?: false}
-      |> Map.update!(:next_chunk_boundary, &(&1 + timestamp_queue.chunk_duration))
-      |> pop_chunked()
+      {next_actions, chunks, timestamp_queue} =
+        %{timestamp_queue | chunk_full?: false}
+        |> Map.update!(:next_chunk_boundary, &(&1 + timestamp_queue.chunk_duration))
+        |> do_pop_chunked(min_max_time)
 
-    {actions ++ next_actions, [chunk] ++ chunks, timestamp_queue}
+      {actions ++ next_actions, [chunk] ++ chunks, timestamp_queue}
+    else
+      {[], [], timestamp_queue}
+    end
   end
 
   @doc """

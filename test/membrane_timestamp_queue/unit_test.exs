@@ -513,6 +513,60 @@ defmodule Membrane.TimestampQueue.UnitTest do
     assert given_chunks == expected_chunks
   end
 
+  test "pop_chunked/1 returns properly chunked buffers from many pads" do
+    queue = TimestampQueue.new(chunk_duration: Membrane.Time.second())
+
+    zero_buffer = %Buffer{dts: 0, payload: ""}
+
+    queue =
+      1..100
+      |> Enum.reduce(queue, fn i, queue ->
+        pad_ref = Pad.ref(:input, i)
+        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, zero_buffer)
+
+        {[], queue} =
+          TimestampQueue.push_buffer(queue, pad_ref, %Buffer{
+            dts: Membrane.Time.seconds(i),
+            payload: ""
+          })
+
+        queue
+      end)
+      |> TimestampQueue.push_end_of_stream(Pad.ref(:input, 1))
+
+    {[], first_batch, queue} = TimestampQueue.pop_chunked(queue)
+
+    assert [first_chunk, second_chunk] = first_batch
+
+    expected_first_chunk_data =
+      MapSet.new(1..100, &{Pad.ref(:input, &1), {:buffer, zero_buffer}})
+
+    assert MapSet.new(first_chunk) == expected_first_chunk_data
+
+    expected_second_chunk = [
+      {Pad.ref(:input, 1), {:buffer, %Buffer{dts: Membrane.Time.second(), payload: ""}}},
+      {Pad.ref(:input, 1), :end_of_stream}
+    ]
+
+    assert second_chunk == expected_second_chunk
+
+    queue =
+      2..100
+      |> Enum.reduce(queue, &TimestampQueue.push_end_of_stream(&2, Pad.ref(:input, &1)))
+
+    {[], second_batch, _queue} = TimestampQueue.pop_chunked(queue)
+
+    expected_second_batch =
+      Enum.map(2..100, fn i ->
+        pad_ref = Pad.ref(:input, i)
+        buffer = %Buffer{dts: Membrane.Time.seconds(i), payload: ""}
+
+        [{pad_ref, {:buffer, buffer}}, {pad_ref, :end_of_stream}]
+      end)
+
+    assert second_batch == expected_second_batch
+  end
+
   test "push_buffer_and_pop_* functions work as composition of push and pop functions" do
     queue =
       TimestampQueue.new(
