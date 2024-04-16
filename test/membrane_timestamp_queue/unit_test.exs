@@ -540,14 +540,15 @@ defmodule Membrane.TimestampQueue.UnitTest do
       end)
 
     dts = Membrane.Time.second() + Membrane.Time.milliseconds(99)
-    buffer =  %Buffer{      dts: dts,      payload: ""    }
+    buffer = %Buffer{dts: dts, payload: ""}
 
-    {[pause_auto_demand: :a], queue} =  TimestampQueue.push_buffer(queue, :a, buffer)
+    {[pause_auto_demand: :a], queue} = TimestampQueue.push_buffer(queue, :a, buffer)
     {[], queue} = TimestampQueue.push_buffer(queue, :b, buffer)
 
     [
-      {&TimestampQueue.pop_available_items/1, &TimestampQueue.push_buffer_and_pop_available_items/3},
-      {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3},
+      {&TimestampQueue.pop_available_items/1,
+       &TimestampQueue.push_buffer_and_pop_available_items/3},
+      {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3}
     ]
     |> Enum.each(fn {pop_fun, push_and_pop_fun} ->
       buffer = %Buffer{dts: Membrane.Time.second() + Membrane.Time.milliseconds(99), payload: ""}
@@ -577,20 +578,20 @@ defmodule Membrane.TimestampQueue.UnitTest do
         queue
       end)
 
-      [
-        {&TimestampQueue.pop_available_items/1, &TimestampQueue.push_buffer_and_pop_available_items/3},
-        {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3},
-      ]
-      |> Enum.each(fn {pop_fun, push_and_pop_fun} ->
-        buffer = %Buffer{dts: Membrane.Time.milliseconds(100), payload: ""}
+    [
+      {&TimestampQueue.pop_available_items/1,
+       &TimestampQueue.push_buffer_and_pop_available_items/3},
+      {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3}
+    ]
+    |> Enum.each(fn {pop_fun, push_and_pop_fun} ->
+      buffer = %Buffer{dts: Membrane.Time.milliseconds(100), payload: ""}
 
-        assert {[], items, _queue} = push_and_pop_fun.(queue, :input, buffer)
+      assert {[], items, _queue} = push_and_pop_fun.(queue, :input, buffer)
 
+      {_actions, queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+      {_actions, expected_items, _queue} = pop_fun.(queue)
 
-        {_actions, queue} = TimestampQueue.push_buffer(queue, :input, buffer)
-        {_actions, expected_items, _queue} = pop_fun.(queue)
-
-        assert items == expected_items
-      end)
+      assert items == expected_items
+    end)
   end
 end
