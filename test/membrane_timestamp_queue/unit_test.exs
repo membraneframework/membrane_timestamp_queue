@@ -512,4 +512,85 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     assert given_chunks == expected_chunks
   end
+
+  test "push_buffer_and_pop_* functions work as composition of push and pop functions" do
+    queue =
+      TimestampQueue.new(
+        pause_demand_boundary_unit: :buffers,
+        pause_demand_boundary: 100,
+        chunk_duration: Membrane.Time.milliseconds(10)
+      )
+
+    buffer = %Buffer{dts: Membrane.Time.seconds(0), payload: ""}
+    {[], queue} = TimestampQueue.push_buffer(queue, :b, buffer)
+    {[], [b: {:buffer, ^buffer}], queue} = TimestampQueue.pop_available_items(queue)
+
+    buffer = %Buffer{dts: Membrane.Time.second(), payload: ""}
+    {[], queue} = TimestampQueue.push_buffer(queue, :a, buffer)
+
+    queue =
+      Enum.reduce(1..98, queue, fn i, queue ->
+        dts = Membrane.Time.second() + Membrane.Time.milliseconds(i)
+        buffer = %Buffer{dts: dts, payload: ""}
+
+        {[], queue} = TimestampQueue.push_buffer(queue, :a, buffer)
+        {[], queue} = TimestampQueue.push_buffer(queue, :b, buffer)
+
+        queue
+      end)
+
+    dts = Membrane.Time.second() + Membrane.Time.milliseconds(99)
+    buffer =  %Buffer{      dts: dts,      payload: ""    }
+
+    {[pause_auto_demand: :a], queue} =  TimestampQueue.push_buffer(queue, :a, buffer)
+    {[], queue} = TimestampQueue.push_buffer(queue, :b, buffer)
+
+    [
+      {&TimestampQueue.pop_available_items/1, &TimestampQueue.push_buffer_and_pop_available_items/3},
+      {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3},
+    ]
+    |> Enum.each(fn {pop_fun, push_and_pop_fun} ->
+      buffer = %Buffer{dts: Membrane.Time.second() + Membrane.Time.milliseconds(99), payload: ""}
+
+      {given_actions, given_items, _queue} = push_and_pop_fun.(queue, :b, buffer)
+
+      {push_actions, queue} = TimestampQueue.push_buffer(queue, :b, buffer)
+      {pop_actions, expected_items, _queue} = pop_fun.(queue)
+
+      assert given_actions == push_actions ++ pop_actions
+      assert given_items == expected_items
+    end)
+  end
+
+  test "push_buffer_and_pop_* functions don't return pause and return demand actions for the same pad" do
+    queue =
+      TimestampQueue.new(
+        pause_demand_boundary_unit: :buffers,
+        pause_demand_boundary: 100,
+        chunk_duration: Membrane.Time.milliseconds(10)
+      )
+
+    queue =
+      Enum.reduce(1..99, queue, fn i, queue ->
+        buffer = %Buffer{dts: Membrane.Time.milliseconds(i), payload: ""}
+        {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+        queue
+      end)
+
+      [
+        {&TimestampQueue.pop_available_items/1, &TimestampQueue.push_buffer_and_pop_available_items/3},
+        {&TimestampQueue.pop_chunked/1, &TimestampQueue.push_buffer_and_pop_chunked/3},
+      ]
+      |> Enum.each(fn {pop_fun, push_and_pop_fun} ->
+        buffer = %Buffer{dts: Membrane.Time.milliseconds(100), payload: ""}
+
+        assert {[], items, _queue} = push_and_pop_fun.(queue, :input, buffer)
+
+
+        {_actions, queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+        {_actions, expected_items, _queue} = pop_fun.(queue)
+
+        assert items == expected_items
+      end)
+  end
 end
