@@ -617,7 +617,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end)
   end
 
-  test "push_buffer_and_pop_* functions don't return pause and return demand actions for the same pad" do
+  test "push_buffer_and_pop_* functions don't return pause and resume demand actions for the same pad" do
     queue =
       TimestampQueue.new(
         pause_demand_boundary_unit: :buffers,
