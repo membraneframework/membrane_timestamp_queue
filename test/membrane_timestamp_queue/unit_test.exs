@@ -339,7 +339,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     end)
   end
 
-  test "queue doesn't return any buffer, if it should wait on buffer from registered pad" do
+  test "queue doesn't return any buffer, if it should wait on buffer from the registered pad" do
     queue =
       TimestampQueue.new()
       |> TimestampQueue.register_pad(:a)
@@ -388,6 +388,45 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     assert grouped_batch |> Map.values() |> MapSet.new() ==
              MapSet.new([buffers, List.delete_at(buffers, 999)])
+  end
+
+  test "queue doesn't wait on buffers from pad registered with option wait_on_buffers?: false" do
+    buffer = %Buffer{dts: 0, payload: ""}
+
+    assert {[], [a: {:buffer, ^buffer}], _queue} =
+             TimestampQueue.new()
+             |> TimestampQueue.register_pad(:b, wait_on_buffers?: false)
+             |> TimestampQueue.push_buffer_and_pop_available_items(:a, buffer)
+  end
+
+  test "queue correctly sorts items from various pads when synchronization stratey is :explicit_offsets" do
+    offsets = %{a: 0, b: 10_001, c: 20_002, d: 30_003}
+
+    queue =
+      TimestampQueue.new(synchronization_strategy: :explicit_offsets)
+      |> TimestampQueue.register_pad(:b, timestamp_offset: offsets.b, wait_on_buffers?: false)
+      |> TimestampQueue.register_pad(:c, timestamp_offset: offsets.c, wait_on_buffers?: false)
+      |> TimestampQueue.register_pad(:d, timestamp_offset: offsets.d, wait_on_buffers?: false)
+
+    {data, queue} =
+      1..100_000//10
+      |> Enum.map_reduce(queue, fn i, queue ->
+        pad_ref = Enum.random([:a, :b, :c, :d])
+        buffer = %Buffer{pts: i, payload: ""}
+
+        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
+
+        {{pad_ref, {:buffer, buffer}}, queue}
+      end)
+
+    expected_batch =
+      Enum.sort_by(data, fn {pad_ref, {:buffer, buffer}} ->
+        buffer.pts - offsets[pad_ref]
+      end)
+
+    {[], given_batch, _queue} = TimestampQueue.flush_and_close(queue)
+
+    assert given_batch == expected_batch
   end
 
   test "queue returns events and stream formats, even if it cannot return next buffer" do
@@ -479,14 +518,14 @@ defmodule Membrane.TimestampQueue.UnitTest do
   end
 
   test "pop_chunked/1 returns properly chunked buffers from a single pad" do
-    overbound = Membrane.Time.seconds(10)
+    upperbound = Membrane.Time.seconds(10)
     step = Membrane.Time.millisecond()
     chunk_duration = Membrane.Time.second()
 
     queue = TimestampQueue.new(chunk_duration: chunk_duration)
 
     buffers =
-      1..overbound//step
+      1..upperbound//step
       |> Enum.map(&%Buffer{pts: &1, payload: ""})
 
     {[], queue} =
@@ -496,7 +535,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         queue
       end)
       |> TimestampQueue.push_buffer(:input, %Buffer{
-        pts: overbound + Membrane.Time.nanosecond(),
+        pts: upperbound + Membrane.Time.nanosecond(),
         payload: ""
       })
 
