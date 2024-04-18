@@ -44,7 +44,6 @@ defmodule Membrane.TimestampQueue do
             chunk_duration: nil | Membrane.Time.t(),
             chunk_full?: boolean(),
             next_chunk_boundary: nil | Membrane.Time.t(),
-            max_time_in_queues: Membrane.Time.t(),
             synchronization_strategy: :synchronize_on_arrival | :explicit_offsets
           }
 
@@ -60,7 +59,6 @@ defmodule Membrane.TimestampQueue do
             chunk_duration: nil,
             chunk_full?: false,
             next_chunk_boundary: nil,
-            max_time_in_queues: 0,
             synchronization_strategy: :synchronize_on_arrival
 
   @typedoc """
@@ -236,7 +234,6 @@ defmodule Membrane.TimestampQueue do
 
     timestamp_queue =
       timestamp_queue
-      |> Map.update!(:max_time_in_queues, &max(&1, buff_time))
       |> Map.update!(:next_chunk_boundary, fn
         nil when timestamp_queue.chunk_duration != nil ->
           buff_time + timestamp_queue.chunk_duration
