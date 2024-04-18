@@ -37,7 +37,7 @@ defmodule Membrane.TimestampQueue do
             metric_unit: :buffers | :bytes | :time,
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
-            blocking_registered_pads: MapSet.new(),
+            blocking_registered_pads: MapSet.t(),
             registered_pads_offsets: %{optional(Pad.ref()) => integer()},
             awaiting_pads: [Pad.ref()],
             closed?: boolean(),
