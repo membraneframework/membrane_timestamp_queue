@@ -570,7 +570,8 @@ defmodule Membrane.TimestampQueue do
   @doc """
   Pops all items in the proper order and closes the queue.
 
-  After being closed, queue is unable handle any new buffer/stream format/event/end of stream.
+  After being closed, nothing can be pushed to the queue anymore - a new queue should be created if
+  needed.
 
   The returned value is a suggested actions list, a list of popped buffers and the updated queue.
 
