@@ -74,12 +74,12 @@ defmodule Membrane.TimestampQueue do
     - `:synchronization_strategy` - `:synchronize_on_arrival` or `:exact_timestamps` (default to `:synchronize_on_arrival`).
       Specyfies, how items from different pads will be synchronized with each other. If it is set to:
       * `:synchronize_on_arrival` - in the moment of the arrival of the first buffer from a specific pad, there will be
-      caluclated timestamp offset for this pad. These offsets will be added to the buffers timestamps, to caluclate from
-      which pad items should be returned in the first order. Every offset will be calculated in such a way that the first
-      buffer from a new pad will be returned as the next item.
+        caluclated timestamp offset for this pad. These offsets will be added to the buffers timestamps, to caluclate from
+        which pad items should be returned in the first order. Every offset will be calculated in such a way that the first
+        buffer from a new pad will be returned as the next item.
       * `:explicit_offsets` - buffers from various pads will be sorted based on their timestamps and pads offsets. Pads
-      offsets can be set using `#{inspect(__MODULE__)}.register_pad/3` function. If pad offset is not explicitly set
-      before the first buffer from this pad, it will be equal 0.
+        offsets can be set using `#{inspect(__MODULE__)}.register_pad/3` function. If pad offset is not explicitly set
+        before the first buffer from this pad, it will be equal 0.
   """
   @type options :: [
           pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
