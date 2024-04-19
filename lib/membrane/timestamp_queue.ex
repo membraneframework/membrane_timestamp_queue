@@ -212,10 +212,6 @@ defmodule Membrane.TimestampQueue do
             nil -> buffer.dts == nil
             valid_boolean -> valid_boolean
           end)
-          |> Map.update!(:timestamps_qex, fn
-            nil when timestamp_queue.metric_unit == :time -> Qex.new()
-            other -> other
-          end)
           |> increase_buffers_size(buffer, timestamp_queue.metric_unit)
           |> check_timestamps_consistency!(buffer, pad_ref)
 
@@ -373,6 +369,11 @@ defmodule Membrane.TimestampQueue do
   defp increase_buffers_size(pad_queue, %Buffer{} = buffer, :time) do
     new_last_timestamp = buffer_time(buffer, pad_queue)
 
+    pad_queue =
+      with %{timestamps_qex: nil} <- pad_queue do
+        %{pad_queue | timestamps_qex: Qex.new()}
+      end
+
     case Qex.last(pad_queue.timestamps_qex) do
       {:value, old_last_timestamp} ->
         time_interval = new_last_timestamp - old_last_timestamp
@@ -457,25 +458,7 @@ defmodule Membrane.TimestampQueue do
   end
 
   @doc """
-  Pushes a buffer and pops items from the queue while they are available.
-
-  Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
-
-  A buffer `b` from pad `p` is available, if all pads different than `p`
-    - either have a buffer in the queue, that is older than `b`
-    - or haven't ever had any buffer on the queue
-    - or have end of stream pushed on the queue.
-
-  An item other than a buffer is considered available if all newer buffers on the same pad are
-  available.
-
-  The returned value is a suggested actions list, a list of popped items and the updated queue.
-
-  If the amount of buffers associated with any pad in the queue
-   - falls below the `pause_demand_boundary`, the suggested actions list contains
-     `t:Membrane.Action.resume_auto_demand()` actions
-   - rises above the `pause_demand_boundary`, the suggested actions list contains
-     `t:Membrane.Action.pause_auto_demand()` action.
+  The equivalent of calling `push_buffer/2` and then `pop_available_items/1`.
   """
   @spec push_buffer_and_pop_available_items(t(), Pad.ref(), Buffer.t()) ::
           {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
@@ -486,25 +469,13 @@ defmodule Membrane.TimestampQueue do
   @type chunk :: [popped_value()]
 
   @doc """
-  Pops chunked items from the queue while there are enough available items, to create a chunk.
+  Works like `pop_available_items/1`, but the returned items are arranged in chunks of duration `chunk_duration`.
 
-  If there are some available items in the queue, but there are not enough of them to create
-  a chunk, it won't be created.
+  `chunk_duration` must be passed as an option to `new/1`. The duration of each chunk may not be exactly the
+  `chunk_duration`, but the average duration will converge to it. With that exception, only full chunks are
+  returned.
 
-  A buffer `b` from pad `p` is available, if all pads different than `p`
-    - either have a buffer in the queue, that is older than `b`
-    - or haven't ever had any buffer on the queue
-    - or have end of stream pushed on the queue.
-
-  An item other than a buffer is considered available if all newer buffers on the same pad are
-  available.
-
-  The returned value is a suggested actions list, a list of chunks of popped items and the updated
-  queue.
-
-  If the amount of buffers associated with any pad in the queue falls below the
-  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.resume_auto_demand()`
-  actions, otherwise it is an empty list.
+  See `pop_available_items/1` for details.
   """
   @spec pop_chunked(t()) :: {[Action.resume_auto_demand()], [chunk()], t()}
   def pop_chunked(%__MODULE__{chunk_duration: nil}) do
@@ -546,30 +517,7 @@ defmodule Membrane.TimestampQueue do
   end
 
   @doc """
-  Pushes a buffer and pops chunked items from the queue, while there are enough available items,
-  to create a chunk.
-
-  Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
-
-  If there are some available items in the queue, but there are not enough of them to create
-  a chunk, it won't be created.
-
-  A buffer `b` from pad `p` is available, if all pads different than `p`
-    - either have a buffer in the queue, that is older than `b`
-    - or haven't ever had any buffer on the queue
-    - or have end of stream pushed on the queue.
-
-  An item other than a buffer is considered available if all newer buffers on the same pad are
-  available.
-
-  The returned value is a suggested actions list, a list of chunks of popped items and the updated
-  queue.
-
-  If the amount of buffers associated with any pad in the queue
-   - falls below the `pause_demand_boundary`, the suggested actions list contains
-     `t:Membrane.Action.resume_auto_demand()` actions
-   - rises above the `pause_demand_boundary`, the suggested actions list contains
-     `t:Membrane.Action.pause_auto_demand()` action.
+  The equivalent of calling `push_buffer/2` and then `pop_chunked/1`.
   """
   @spec push_buffer_and_pop_chunked(t(), Pad.ref(), Buffer.t()) ::
           {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
