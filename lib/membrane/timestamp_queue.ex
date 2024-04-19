@@ -16,16 +16,16 @@ defmodule Membrane.TimestampQueue do
   alias Membrane.{Buffer, Event, Pad, StreamFormat}
   alias Membrane.Element.Action
 
-  @type pad_queue :: %{
-          timestamp_offset: integer(),
-          qex: Qex.t(),
-          buffers_size: non_neg_integer(),
-          buffers_number: non_neg_integer(),
-          paused_demand?: boolean(),
-          end_of_stream?: boolean(),
-          use_pts?: boolean() | nil,
-          max_timestamp_on_qex: Membrane.Time.t() | nil
-        }
+  @typep pad_queue :: %{
+           timestamp_offset: integer(),
+           qex: Qex.t(),
+           buffers_size: non_neg_integer(),
+           buffers_number: non_neg_integer(),
+           end_of_stream?: boolean(),
+           use_pts?: boolean() | nil,
+           max_timestamp_on_qex: Membrane.Time.t() | nil,
+           timestamps_qex: Qex.t() | nil
+         }
 
   @typedoc """
   A queue, that accepts buffers, stream formats and events from various pads and sorts them based on
@@ -34,40 +34,58 @@ defmodule Membrane.TimestampQueue do
   @opaque t :: %__MODULE__{
             current_queue_time: Membrane.Time.t(),
             pause_demand_boundary: pos_integer() | :infinity,
-            pause_demand_boundary_unit: :buffers | :bytes,
+            metric_unit: :buffers | :bytes | :time,
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
             registered_pads: MapSet.t(),
-            awaiting_pads: [Pad.ref()]
+            awaiting_pads: [Pad.ref()],
+            closed?: boolean(),
+            chunk_duration: nil | Membrane.Time.t(),
+            chunk_full?: boolean(),
+            next_chunk_boundary: nil | Membrane.Time.t(),
+            max_time_in_queues: Membrane.Time.t()
           }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
             pause_demand_boundary: :infinity,
-            pause_demand_boundary_unit: :buffers,
+            metric_unit: :buffers,
             pad_queues: %{},
             pads_heap: Heap.max(),
             registered_pads: MapSet.new(),
-            awaiting_pads: []
+            awaiting_pads: [],
+            closed?: false,
+            chunk_duration: nil,
+            chunk_full?: false,
+            next_chunk_boundary: nil,
+            max_time_in_queues: 0
 
   @typedoc """
   Options passed to #{inspect(__MODULE__)}.new/1.
 
   Following options are allowed:
-    - `:pause_demand_boundary` - positive integer or `:infinity` (default to `:infinity`). Tells, what
-      amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
-    - `:pause_demand_boundary_unit` - `:buffers` or `:bytes` (deafult to `:buffers`). Tells, in which metric
+    - `:pause_demand_boundary` - positive integer, `t:Membrane.Time.t()` or `:infinity` (default to `:infinity`). Tells,
+      what amount of buffers associated with specific pad must be stored in the queue, to pause auto demand.
+    - `:pause_demand_boundary_unit` - `:buffers`, `:bytes` or `:time` (deafult to `:buffers`). Tells, in which metric
       `:pause_demand_boundary` is specified.
+    - `:chunk_duration` - `Membrane.Time.t()`. Specifies how long the fragments returned by
+      `#{inspect(__MODULE__)}.pop_chunked/1` will be approximately.
   """
   @type options :: [
-          pause_demand_boundary: pos_integer() | :infinity,
-          pause_demand_boundary_unit: :buffers | :bytes
+          pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
+          pause_demand_boundary_unit: :buffers | :bytes | :time,
+          chunk_duration: Membrane.Time.t()
         ]
 
   @spec new(options) :: t()
   def new(options \\ []) do
-    [pause_demand_boundary: boundary, pause_demand_boundary_unit: unit] =
+    [
+      chunk_duration: chunk_duration,
+      pause_demand_boundary: boundary,
+      pause_demand_boundary_unit: unit
+    ] =
       options
       |> Keyword.validate!(
+        chunk_duration: nil,
         pause_demand_boundary: :infinity,
         pause_demand_boundary_unit: :buffers
       )
@@ -75,14 +93,15 @@ defmodule Membrane.TimestampQueue do
 
     %__MODULE__{
       pause_demand_boundary: boundary,
-      pause_demand_boundary_unit: unit
+      metric_unit: unit,
+      chunk_duration: chunk_duration
     }
   end
 
   @doc """
   Registers an input pad in the queue without pushing anything on that pad.
 
-  Once a pad is registered, the `pop_batch/3` function won't return buffers
+  Once a pad is registered, the `pop_available_items/3` function won't return buffers
   until a `buffer` or `end_of_stream` is available on the registered pad.
 
   Pushing a buffer on an unregistered pad automatically registers it.
@@ -98,8 +117,8 @@ defmodule Membrane.TimestampQueue do
 
   Returns a suggested actions list and the updated queue.
 
-  If amount of buffers associated with specified pad in the queue just exceded
-  `pause_demand_boundary`, the suggested actions list contains `t:Action.pause_auto_demand()`
+  If the amount of buffers associated with the specified pad in the queue just exceded
+  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.pause_auto_demand()`
   action, otherwise it is equal an empty list.
 
   Buffers pushed to the queue must have a non-`nil` `dts` or `pts`.
@@ -113,27 +132,53 @@ defmodule Membrane.TimestampQueue do
   end
 
   def push_buffer(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
-    timestamp_queue
-    |> push_item(pad_ref, {:buffer, buffer})
-    |> Map.update!(:registered_pads, &MapSet.delete(&1, pad_ref))
-    |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
-    |> get_and_update_in([:pad_queues, pad_ref], fn pad_queue ->
-      pad_queue
-      |> Map.merge(%{
-        buffers_size: pad_queue.buffers_size + buffer_size(timestamp_queue, buffer),
-        buffers_number: pad_queue.buffers_number + 1
-      })
-      |> Map.update!(:timestamp_offset, fn
-        nil -> timestamp_queue.current_queue_time - (buffer.dts || buffer.pts)
-        valid_offset -> valid_offset
+    {actions, timestamp_queue} =
+      timestamp_queue
+      |> push_item(pad_ref, {:buffer, buffer})
+      |> Map.update!(:registered_pads, &MapSet.delete(&1, pad_ref))
+      |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
+      |> get_and_update_in([:pad_queues, pad_ref], fn pad_queue ->
+        old_buffers_size = pad_queue.buffers_size
+
+        pad_queue =
+          pad_queue
+          |> Map.update!(:buffers_number, &(&1 + 1))
+          |> Map.update!(:timestamp_offset, fn
+            nil -> timestamp_queue.current_queue_time - (buffer.dts || buffer.pts)
+            valid_offset -> valid_offset
+          end)
+          |> Map.update!(:use_pts?, fn
+            nil -> buffer.dts == nil
+            valid_boolean -> valid_boolean
+          end)
+          |> increase_buffers_size(buffer, timestamp_queue.metric_unit)
+          |> check_timestamps_consistency!(buffer, pad_ref)
+
+        boundary = timestamp_queue.pause_demand_boundary
+
+        actions =
+          if pad_queue.buffers_size >= boundary and old_buffers_size < boundary,
+            do: [pause_auto_demand: pad_ref],
+            else: []
+
+        {actions, pad_queue}
       end)
-      |> Map.update!(:use_pts?, fn
-        nil -> buffer.dts == nil
-        valid_boolean -> valid_boolean
+
+    pad_queue = timestamp_queue.pad_queues |> Map.get(pad_ref)
+    buff_time = buffer_time(buffer, pad_queue)
+
+    timestamp_queue =
+      timestamp_queue
+      |> Map.update!(:max_time_in_queues, &max(&1, buff_time))
+      |> Map.update!(:next_chunk_boundary, fn
+        nil when timestamp_queue.chunk_duration != nil ->
+          buff_time + timestamp_queue.chunk_duration
+
+        other ->
+          other
       end)
-      |> check_timestamps_consistency!(buffer, pad_ref)
-      |> actions_after_pushing_buffer(pad_ref, timestamp_queue.pause_demand_boundary)
-    end)
+
+    {actions, timestamp_queue}
   end
 
   defp check_timestamps_consistency!(pad_queue, buffer, pad_ref) do
@@ -195,6 +240,21 @@ defmodule Membrane.TimestampQueue do
     |> Map.update!(:awaiting_pads, &List.delete(&1, pad_ref))
   end
 
+  defp push_item(%__MODULE__{closed?: true}, pad_ref, item) do
+    inspected_item =
+      case item do
+        :end_of_stream -> "end of stream"
+        {:stream_format, value} -> "stream format #{inspect(value)}"
+        {type, value} -> "#{type} #{inspect(value)}"
+      end
+
+    raise """
+    Unable to push #{inspected_item} from pad #{inspect(pad_ref)} on the already closed #{inspect(__MODULE__)}. \
+    After calling #{inspect(__MODULE__)}.flush_and_close/1 queue is not capable to handle new items and new \
+    queue has to be created.
+    """
+  end
+
   defp push_item(%__MODULE__{} = timestamp_queue, pad_ref, item) do
     timestamp_queue
     |> maybe_push_pad_on_heap_on_new_item(pad_ref, item)
@@ -227,27 +287,57 @@ defmodule Membrane.TimestampQueue do
       qex: Qex.new(),
       buffers_size: 0,
       buffers_number: 0,
-      paused_demand?: false,
       end_of_stream?: false,
       use_pts?: nil,
       max_timestamp_on_qex: nil,
-      recently_returned_timestamp: nil
+      timestamps_qex: nil
     }
   end
 
-  defp actions_after_pushing_buffer(pad_queue, pad_ref, pause_demand_boundary) do
-    if not pad_queue.paused_demand? and pad_queue.buffers_size >= pause_demand_boundary do
-      {[pause_auto_demand: pad_ref], %{pad_queue | paused_demand?: true}}
-    else
-      {[], pad_queue}
+  defp increase_buffers_size(pad_queue, %Buffer{} = buffer, :time) do
+    new_last_timestamp = buffer_time(buffer, pad_queue)
+
+    pad_queue =
+      with %{timestamps_qex: nil} <- pad_queue do
+        %{pad_queue | timestamps_qex: Qex.new()}
+      end
+
+    case Qex.last(pad_queue.timestamps_qex) do
+      {:value, old_last_timestamp} ->
+        time_interval = new_last_timestamp - old_last_timestamp
+        %{pad_queue | buffers_size: pad_queue.buffers_size + time_interval}
+
+      :empty ->
+        pad_queue
+    end
+    |> Map.update!(:timestamps_qex, &Qex.push(&1, new_last_timestamp))
+  end
+
+  defp increase_buffers_size(pad_queue, _buffer, :buffers),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size + 1}
+
+  defp increase_buffers_size(pad_queue, %Buffer{payload: payload}, :bytes),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size + byte_size(payload)}
+
+  defp decrease_buffers_size(pad_queue, _buffer, :time) do
+    {first_timestamp, timestamps_qex} = Qex.pop!(pad_queue.timestamps_qex)
+    pad_queue = %{pad_queue | timestamps_qex: timestamps_qex}
+
+    case Qex.first(timestamps_qex) do
+      {:value, second_timestamp} ->
+        time_interval = second_timestamp - first_timestamp
+        %{pad_queue | buffers_size: pad_queue.buffers_size - time_interval}
+
+      :empty ->
+        pad_queue
     end
   end
 
-  defp buffer_size(%__MODULE__{pause_demand_boundary_unit: :buffers}, _buffer),
-    do: 1
+  defp decrease_buffers_size(pad_queue, _buffer, :buffers),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size - 1}
 
-  defp buffer_size(%__MODULE__{pause_demand_boundary_unit: :bytes}, %Buffer{payload: payload}),
-    do: byte_size(payload)
+  defp decrease_buffers_size(pad_queue, %Buffer{payload: payload}, :bytes),
+    do: %{pad_queue | buffers_size: pad_queue.buffers_size - byte_size(payload)}
 
   defp buffer_time(%Buffer{dts: dts}, %{use_pts?: false, timestamp_offset: timestamp_offset}),
     do: dts + timestamp_offset
@@ -274,76 +364,159 @@ defmodule Membrane.TimestampQueue do
   An item other than a buffer is considered available if all newer buffers on the same pad are
   available.
 
-  The returned value is a suggested actions list, a list of popped buffers and the updated queue.
+  The returned value is a suggested actions list, a list of popped items and the updated queue.
 
   If the amount of buffers associated with any pad in the queue falls below the
-  `pause_demand_boundary`, the suggested actions list contains `t:Action.resume_auto_demand()`
+  `pause_demand_boundary`, the suggested actions list contains `t:Membrane.Action.resume_auto_demand()`
   actions, otherwise it is an empty list.
   """
-  @spec pop_batch(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
-  def pop_batch(%__MODULE__{} = timestamp_queue) do
-    do_pop_batch(timestamp_queue, [], [])
+  @spec pop_available_items(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
+  def pop_available_items(%__MODULE__{} = timestamp_queue) do
+    {actions, items, timestamp_queue} = do_pop(timestamp_queue, [], [], false)
+
+    timestamp_queue =
+      with %{chunk_duration: chunk_duration} when chunk_duration != nil <- timestamp_queue do
+        %{
+          timestamp_queue
+          | next_chunk_boundary: timestamp_queue.current_queue_time + chunk_duration
+        }
+      end
+
+    {actions, items, timestamp_queue}
   end
 
-  defp do_pop_batch(%__MODULE__{} = timestamp_queue, actions_acc, items_acc) do
+  @doc """
+  The equivalent of calling `push_buffer/2` and then `pop_available_items/1`.
+  """
+  @spec push_buffer_and_pop_available_items(t(), Pad.ref(), Buffer.t()) ::
+          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
+  def push_buffer_and_pop_available_items(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
+    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_available_items/1)
+  end
+
+  @type chunk :: [popped_value()]
+
+  @doc """
+  Works like `pop_available_items/1`, but the returned items are arranged in chunks of duration `chunk_duration`.
+
+  `chunk_duration` must be passed as an option to `new/1`. The duration of each chunk may not be exactly the
+  `chunk_duration`, but the average duration will converge to it. With that exception, only full chunks are
+  returned.
+
+  See `pop_available_items/1` for details.
+  """
+  @spec pop_chunked(t()) :: {[Action.resume_auto_demand()], [chunk()], t()}
+  def pop_chunked(%__MODULE__{chunk_duration: nil}) do
+    raise """
+    Cannot invoke function #{inspect(__MODULE__)}.pop_chunked/1 on a queue, that has :chunk_duration field \
+    set to nil. You can set this field by passing {:chunk_duration, some_membrane_time} option to \
+    #{inspect(__MODULE__)}.new/1.
+    """
+  end
+
+  def pop_chunked(%__MODULE__{} = timestamp_queue) do
+    min_max_time =
+      timestamp_queue.pad_queues
+      |> Enum.reduce(:infinity, fn
+        {_pad_ref, %{end_of_stream?: true}}, min_max_time ->
+          min_max_time
+
+        {_pad_ref, %{max_timestamp_on_qex: max_ts, timestamp_offset: offset}}, min_max_time ->
+          min(min_max_time, max_ts + offset)
+      end)
+
+    do_pop_chunked(timestamp_queue, min_max_time)
+  end
+
+  defp do_pop_chunked(timestamp_queue, min_max_time) do
+    if min_max_time >= timestamp_queue.next_chunk_boundary and
+         (min_max_time != :infinity or timestamp_queue.pad_queues != %{}) do
+      {actions, chunk, timestamp_queue} = do_pop(timestamp_queue, [], [], true)
+
+      {next_actions, chunks, timestamp_queue} =
+        %{timestamp_queue | chunk_full?: false}
+        |> Map.update!(:next_chunk_boundary, &(&1 + timestamp_queue.chunk_duration))
+        |> do_pop_chunked(min_max_time)
+
+      {actions ++ next_actions, [chunk] ++ chunks, timestamp_queue}
+    else
+      {[], [], timestamp_queue}
+    end
+  end
+
+  @doc """
+  The equivalent of calling `push_buffer/2` and then `pop_chunked/1`.
+  """
+  @spec push_buffer_and_pop_chunked(t(), Pad.ref(), Buffer.t()) ::
+          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
+  def push_buffer_and_pop_chunked(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
+    push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_chunked/1)
+  end
+
+  defp do_pop(%__MODULE__{} = timestamp_queue, actions_acc, items_acc, pop_chunk?) do
     try_return_buffer? =
-      MapSet.size(timestamp_queue.registered_pads) == 0 and timestamp_queue.awaiting_pads == []
+      MapSet.size(timestamp_queue.registered_pads) == 0 and timestamp_queue.awaiting_pads == [] and
+        not timestamp_queue.chunk_full?
 
     case Heap.root(timestamp_queue.pads_heap) do
       {priority, pad_ref} when try_return_buffer? or priority == :infinity ->
         {actions, items, timestamp_queue} =
           timestamp_queue
           |> Map.update!(:pads_heap, &Heap.pop/1)
-          |> pop_buffer_and_following_items(pad_ref)
+          |> pop_buffer_and_following_items(pad_ref, pop_chunk?)
 
-        do_pop_batch(timestamp_queue, actions ++ actions_acc, items ++ items_acc)
+        do_pop(timestamp_queue, actions ++ actions_acc, items ++ items_acc, pop_chunk?)
 
       _other ->
         {actions_acc, Enum.reverse(items_acc), timestamp_queue}
     end
   end
 
-  @spec pop_buffer_and_following_items(t(), Pad.ref()) ::
+  @spec pop_buffer_and_following_items(t(), Pad.ref(), boolean()) ::
           {[Action.resume_auto_demand()], [popped_value()], t()}
-  defp pop_buffer_and_following_items(%__MODULE__{} = timestamp_queue, pad_ref) do
+  defp pop_buffer_and_following_items(%__MODULE__{} = timestamp_queue, pad_ref, pop_chunk?) do
     pad_queue = timestamp_queue.pad_queues |> Map.get(pad_ref)
 
-    with {{:value, {:buffer, buffer}}, qex} <- Qex.pop(pad_queue.qex) do
-      old_buffers_size = pad_queue.buffers_size
+    {actions, items, timestamp_queue} =
+      with {{:value, {:buffer, buffer}}, qex} <- Qex.pop(pad_queue.qex),
+           buffer_time when not pop_chunk? or buffer_time < timestamp_queue.next_chunk_boundary <-
+             buffer_time(buffer, pad_queue) do
+        old_buffers_size = pad_queue.buffers_size
 
-      pad_queue = %{
-        pad_queue
-        | qex: qex,
-          buffers_size: old_buffers_size - buffer_size(timestamp_queue, buffer),
-          buffers_number: pad_queue.buffers_number - 1
-      }
+        pad_queue =
+          %{pad_queue | qex: qex, buffers_number: pad_queue.buffers_number - 1}
+          |> decrease_buffers_size(buffer, timestamp_queue.metric_unit)
 
-      timestamp_queue =
-        with %{buffers_number: 0, end_of_stream?: false} <- pad_queue do
-          timestamp_queue
-          |> Map.update!(:awaiting_pads, &[pad_ref | &1])
-        else
-          _pad_queue -> timestamp_queue
-        end
+        timestamp_queue =
+          with %{buffers_number: 0, end_of_stream?: false} <- pad_queue do
+            Map.update!(timestamp_queue, :awaiting_pads, &[pad_ref | &1])
+          else
+            _pad_queue -> timestamp_queue
+          end
 
-      timestamp_queue =
-        timestamp_queue
-        |> put_in([:pad_queues, pad_ref], pad_queue)
-        |> Map.put(:current_queue_time, buffer_time(buffer, pad_queue))
+        timestamp_queue =
+          %{timestamp_queue | current_queue_time: buffer_time}
+          |> put_in([:pad_queues, pad_ref], pad_queue)
 
-      boundary = timestamp_queue.pause_demand_boundary
+        boundary = timestamp_queue.pause_demand_boundary
 
-      actions =
-        if pad_queue.buffers_size < boundary and old_buffers_size >= boundary,
-          do: [resume_auto_demand: pad_ref],
-          else: []
+        actions =
+          if pad_queue.buffers_size < boundary and old_buffers_size >= boundary,
+            do: [resume_auto_demand: pad_ref],
+            else: []
 
-      items = [{pad_ref, {:buffer, buffer}}]
+        items = [{pad_ref, {:buffer, buffer}}]
 
-      pop_following_items(timestamp_queue, pad_ref, actions, items)
-    else
-      _other -> pop_following_items(timestamp_queue, pad_ref, [], [])
-    end
+        {actions, items, timestamp_queue}
+      else
+        buffer_time when is_integer(buffer_time) and pop_chunk? ->
+          {[], [], %{timestamp_queue | chunk_full?: true}}
+
+        _non_buffer_pop_result ->
+          {[], [], timestamp_queue}
+      end
+
+    pop_following_items(timestamp_queue, pad_ref, actions, items)
   end
 
   @spec pop_following_items(t(), Pad.ref(), [Action.resume_auto_demand()], [popped_value()]) ::
@@ -373,8 +546,47 @@ defmodule Membrane.TimestampQueue do
     end
   end
 
+  defp push_buffer_and_pop(timestamp_queue, pad_ref, buffer, pop_fun) do
+    {maybe_pause, timestamp_queue} = push_buffer(timestamp_queue, pad_ref, buffer)
+    {maybe_resume, items, timestamp_queue} = pop_fun.(timestamp_queue)
+
+    actions =
+      with [pause_auto_demand: pad_ref] <- maybe_pause,
+           index when is_integer(index) <-
+             Enum.find_index(maybe_resume, &(&1 == {:resume_auto_demand, pad_ref})) do
+        List.delete_at(maybe_resume, index)
+      else
+        _other -> maybe_pause ++ maybe_resume
+      end
+
+    {actions, items, timestamp_queue}
+  end
+
   defp push_pad_on_heap(timestamp_queue, pad_ref, priority) do
     heap_item = {priority, pad_ref}
     Map.update!(timestamp_queue, :pads_heap, &Heap.push(&1, heap_item))
+  end
+
+  @doc """
+  Pops all items in the proper order and closes the queue.
+
+  After being closed, nothing can be pushed to the queue anymore - a new queue should be created if
+  needed.
+
+  The returned value is a suggested actions list, a list of popped buffers and the updated queue.
+
+  Suggested actions list contains `t:Membrane.Action.resume_auto_demand()` for every pad, that had
+  pasued auto demand before the flush.
+  """
+  @spec flush_and_close(t()) :: {[Action.resume_auto_demand()], [popped_value()], t()}
+  def flush_and_close(%__MODULE__{} = timestamp_queue) do
+    %{timestamp_queue | closed?: true, registered_pads: MapSet.new(), awaiting_pads: []}
+    |> Map.update!(
+      :pad_queues,
+      &Map.new(&1, fn {pad_ref, data} ->
+        {pad_ref, %{data | end_of_stream?: true}}
+      end)
+    )
+    |> pop_available_items()
   end
 end
