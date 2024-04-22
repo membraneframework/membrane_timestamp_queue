@@ -510,6 +510,8 @@ defmodule Membrane.TimestampQueue.UnitTest do
       assert closed_queue.pads_heap == popped_queue.pads_heap
       assert closed_queue.pad_queues == popped_queue.pad_queues
 
+      assert closed_queue.closed?
+
       assert_raise RuntimeError, ~r/Unable to push .* already closed/, fn ->
         buffer = %Buffer{dts: 10_001, payload: ""}
         TimestampQueue.push_buffer(closed_queue, Pad.ref(:input, 0), buffer)
