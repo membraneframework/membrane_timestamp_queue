@@ -38,7 +38,7 @@ defmodule Membrane.TimestampQueue.Mixfile do
   defp deps do
     [
       {:membrane_core, "~> 1.0"},
-      {:heap, "~> 3.0"},
+      {:heap, "~> 2.0"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:dialyxir, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: :dev, runtime: false}
