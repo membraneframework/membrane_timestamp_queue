@@ -233,19 +233,19 @@ defmodule Membrane.TimestampQueue do
   defp maybe_handle_first_buffer(
          %{timestamp_offset: nil} = pad_queue,
          pad_ref,
-         buffer,
+         first_buffer,
          timestamp_queue
        ) do
     offset =
       case timestamp_queue.synchronization_strategy do
         :synchronize_on_arrival ->
-          (buffer.dts || buffer.pts) - timestamp_queue.current_queue_time
+          (first_buffer.dts || first_buffer.pts) - timestamp_queue.current_queue_time
 
         :explicit_offsets ->
           Map.get(timestamp_queue.registered_pads_offsets, pad_ref, 0)
       end
 
-    use_pts? = buffer.pts != nil
+    use_pts? = first_buffer.dts == nil
 
     %{pad_queue | timestamp_offset: offset, use_pts?: use_pts?}
   end
