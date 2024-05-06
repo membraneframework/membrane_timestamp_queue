@@ -80,8 +80,8 @@ defmodule Membrane.TimestampQueue do
   Options passed to `#{inspect(__MODULE__)}.new/1`.
 
   Following options are allowed:
-    - `:pause_demand_boundary` - `t:pause_demand_boundary()`. Default to `{:buffers, 1000}`.
-    - `:chunk_duration` - `Membrane.Time.t()`. Specifies how long the fragments returned by
+    - `:pause_demand_boundary` - `t:pause_demand_boundary/0`. Defaults to `{:buffers, 1000}`.
+    - `:chunk_duration` - `t:Membrane.Time.t/0`. Specifies how long the fragments returned by
       `#{inspect(__MODULE__)}.pop_chunked/1` will be approximately. If not set, popping chunks will not be available.
     - `:synchronization_strategy` - `:synchronize_on_arrival` or `:exact_timestamps` (default to `:synchronize_on_arrival`).
       Specyfies, how items from different pads will be synchronized with each other. If it is set to:

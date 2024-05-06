@@ -377,7 +377,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     grouped_batch = Enum.group_by(batch, &elem(&1, 0), &(elem(&1, 1) |> elem(1)))
 
-    assert grouped_batch |> Map.keys() |> MapSet.new() == MapSet.new([:a, :b])
+    assert grouped_batch |> Map.keys() |> Enum.sort() == [:a, :b]
 
     assert grouped_batch |> Map.values() |> MapSet.new() ==
              MapSet.new([buffers, List.delete_at(buffers, 999)])
@@ -574,10 +574,11 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     assert [first_chunk, second_chunk] = first_batch
 
-    expected_first_chunk_data =
-      MapSet.new(1..100, &{Pad.ref(:input, &1), {:buffer, zero_buffer}})
+    sorted_expected_first_chunk =
+      Enum.map(1..100, &{Pad.ref(:input, &1), {:buffer, zero_buffer}})
+      |> Enum.sort()
 
-    assert MapSet.new(first_chunk) == expected_first_chunk_data
+    assert Enum.sort(first_chunk) == sorted_expected_first_chunk
 
     expected_second_chunk = [
       {Pad.ref(:input, 1), {:buffer, %Buffer{dts: Membrane.Time.second(), payload: ""}}},
@@ -722,7 +723,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     pads_in_queue = [:a, :c, :e, :h]
     pads_beyond_queue = [:b, :d, :f, :g]
 
-    assert TimestampQueue.pads(queue) |> MapSet.new() == MapSet.new(pads_in_queue)
+    assert TimestampQueue.pads(queue) |> Enum.sort() == pads_in_queue
 
     for pad_ref <- pads_in_queue do
       assert TimestampQueue.has_pad?(queue, pad_ref)
