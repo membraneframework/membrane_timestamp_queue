@@ -30,7 +30,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     queue =
       input_order
       |> Enum.reduce(TimestampQueue.new(), fn i, queue ->
-        assert {[], queue} =
+        assert {_actions, queue} =
                  TimestampQueue.push_buffer(queue, pad_generator.(i), %Buffer{
                    dts: 0,
                    payload: <<>>
@@ -42,14 +42,14 @@ defmodule Membrane.TimestampQueue.UnitTest do
     queue =
       input_order
       |> Enum.reduce(queue, fn i, queue ->
-        assert {[], queue} =
+        assert {_actions, queue} =
                  TimestampQueue.push_buffer(queue, pad_generator.(i), buffer_generator.(i))
 
         queue
       end)
 
     # assert that queue won't pop last buffer from pad queue, if it hasn't recevied EoS on this pad
-    assert {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
     batch_length = length(batch)
 
     batch
@@ -65,7 +65,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         TimestampQueue.push_end_of_stream(queue, pad_generator.(i))
       end)
 
-    assert {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
 
     # assert batch
     expected_batch =
@@ -137,7 +137,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         queue =
           case apply(TimestampQueue, fun_name, [queue, pad_ref, item]) do
             # if buffer
-            {[], queue} -> queue
+            {_actions, queue} -> queue
             # if event or stream_format
             queue -> queue
           end
@@ -153,7 +153,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     # sanity check, that test is written correctly
     assert %{} = pads_items
 
-    assert {[], batch, _queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, batch, _queue} = TimestampQueue.pop_available_items(queue)
     assert length(batch) == pads_number * pad_items_number + pads_number
 
     batch_without_eos = Enum.reject(batch, &match?({_pad_ref, :end_of_stream}, &1))
@@ -168,19 +168,19 @@ defmodule Membrane.TimestampQueue.UnitTest do
   test "queue prioritizes stream formats and buffers not preceded by a buffer" do
     queue = TimestampQueue.new()
 
-    {[], queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 1, payload: <<>>})
-    {[], queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 2, payload: <<>>})
+    {_actions, queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 1, payload: <<>>})
+    {_actions, queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 2, payload: <<>>})
 
     expected_batch = for i <- [1, 2], do: {:a, {:buffer, %Buffer{dts: i, payload: <<>>}}}
-    assert {[], ^expected_batch, queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, ^expected_batch, queue} = TimestampQueue.pop_available_items(queue)
 
-    {[], queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 3, payload: <<>>})
+    {_actions, queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 3, payload: <<>>})
     queue = TimestampQueue.push_end_of_stream(queue, :a)
 
     queue = TimestampQueue.push_stream_format(queue, :b, %StreamFormat{})
     queue = TimestampQueue.push_event(queue, :b, %Event{})
 
-    assert {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
 
     assert batch == [
              b: {:stream_format, %StreamFormat{}},
@@ -189,7 +189,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
              a: :end_of_stream
            ]
 
-    assert {[], [], ^queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, [], ^queue} = TimestampQueue.pop_available_items(queue)
   end
 
   [
@@ -205,10 +205,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
       boundary = buffer_size * boundary_in_buff_no
 
       queue =
-        TimestampQueue.new(
-          pause_demand_boundary: boundary,
-          pause_demand_boundary_unit: unit
-        )
+        TimestampQueue.new(pause_demand_boundary: {unit, boundary})
 
       Enum.reduce(1..10, queue, fn _iteration, queue ->
         queue =
@@ -241,11 +238,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
   end)
 
   test "queue returns proper suggested actions when boundary unit is :time" do
-    queue =
-      TimestampQueue.new(
-        pause_demand_boundary: 100,
-        pause_demand_boundary_unit: :time
-      )
+    queue = TimestampQueue.new(pause_demand_boundary: {:time, 100})
 
     Enum.reduce(1..10, queue, fn iteration, queue ->
       pts_offset = iteration * 100_000
@@ -295,7 +288,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         %Buffer{payload: <<>>}
         |> Map.put(new_pad_timestamp_field, 0)
 
-      {[], queue} = TimestampQueue.push_buffer(queue, new_pad, buffer)
+      {_actions, queue} = TimestampQueue.push_buffer(queue, new_pad, buffer)
 
       queue =
         pads
@@ -310,12 +303,12 @@ defmodule Membrane.TimestampQueue.UnitTest do
               %Buffer{payload: <<>>}
               |> Map.put(timestamp_field, timestamp)
 
-            {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
+            {_actions, queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
             queue
           end)
         end)
 
-      {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+      {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
 
       sorted_batch =
         batch
@@ -359,32 +352,32 @@ defmodule Membrane.TimestampQueue.UnitTest do
     queue =
       buffers
       |> Enum.reduce(queue, fn buffer, queue ->
-        {[], queue} = TimestampQueue.push_buffer(queue, :a, buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, :a, buffer)
         queue
       end)
 
-    {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
 
     grouped_batch = Enum.group_by(batch, &elem(&1, 0), &(elem(&1, 1) |> elem(1)))
     assert grouped_batch == %{a: events, b: events}
 
-    assert {[], [], queue} = TimestampQueue.pop_available_items(queue)
+    assert {_actions, [], queue} = TimestampQueue.pop_available_items(queue)
 
     queue =
       buffers
       |> Enum.reduce(queue, fn buffer, queue ->
-        {[], queue} = TimestampQueue.push_buffer(queue, :b, buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, :b, buffer)
         queue
       end)
 
-    {[], batch, _queue} = TimestampQueue.pop_available_items(queue)
+    {_actions, batch, _queue} = TimestampQueue.pop_available_items(queue)
 
     sorted_batch = Enum.sort_by(batch, fn {_pad_ref, {:buffer, buffer}} -> buffer.dts end)
     assert batch == sorted_batch
 
     grouped_batch = Enum.group_by(batch, &elem(&1, 0), &(elem(&1, 1) |> elem(1)))
 
-    assert grouped_batch |> Map.keys() |> MapSet.new() == MapSet.new([:a, :b])
+    assert grouped_batch |> Map.keys() |> Enum.sort() == [:a, :b]
 
     assert grouped_batch |> Map.values() |> MapSet.new() ==
              MapSet.new([buffers, List.delete_at(buffers, 999)])
@@ -393,7 +386,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
   test "queue doesn't wait on buffers from pad registered with option wait_on_buffers?: false" do
     buffer = %Buffer{dts: 0, payload: ""}
 
-    assert {[], [a: {:buffer, ^buffer}], _queue} =
+    assert {_actions, [a: {:buffer, ^buffer}], _queue} =
              TimestampQueue.new()
              |> TimestampQueue.register_pad(:b, wait_on_buffers?: false)
              |> TimestampQueue.push_buffer_and_pop_available_items(:a, buffer)
@@ -414,7 +407,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         pad_ref = Enum.random([:a, :b, :c, :d])
         buffer = %Buffer{pts: i, payload: ""}
 
-        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
 
         {{pad_ref, {:buffer, buffer}}, queue}
       end)
@@ -424,7 +417,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         buffer.pts - offsets[pad_ref]
       end)
 
-    {[], given_batch, _queue} = TimestampQueue.flush_and_close(queue)
+    {_actions, given_batch, _queue} = TimestampQueue.flush_and_close(queue)
 
     assert given_batch == expected_batch
   end
@@ -432,10 +425,10 @@ defmodule Membrane.TimestampQueue.UnitTest do
   test "queue returns events and stream formats, even if it cannot return next buffer" do
     queue = TimestampQueue.new()
 
-    {[], queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 0, payload: ""})
-    {[], queue} = TimestampQueue.push_buffer(queue, :b, %Buffer{dts: 0, payload: ""})
+    {_actions, queue} = TimestampQueue.push_buffer(queue, :a, %Buffer{dts: 0, payload: ""})
+    {_actions, queue} = TimestampQueue.push_buffer(queue, :b, %Buffer{dts: 0, payload: ""})
 
-    {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
     assert [{pad_ref, {:buffer, _buffer}}] = batch
 
     queue =
@@ -443,7 +436,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         TimestampQueue.push_event(queue, pad_ref, %Event{})
       end)
 
-    {[], batch, queue} = TimestampQueue.pop_available_items(queue)
+    {_actions, batch, queue} = TimestampQueue.pop_available_items(queue)
 
     assert batch == for(_i <- 1..10, do: {pad_ref, {:event, %Event{}}})
 
@@ -455,13 +448,13 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
     queue =
       Enum.reduce(buffers, queue, fn {pad, buffer}, queue ->
-        {[], queue} = TimestampQueue.push_buffer(queue, pad, buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, pad, buffer)
         queue
       end)
       |> TimestampQueue.push_end_of_stream(:a)
       |> TimestampQueue.push_end_of_stream(:b)
 
-    {[], batch, _queue} = TimestampQueue.pop_available_items(queue)
+    {_actions, batch, _queue} = TimestampQueue.pop_available_items(queue)
 
     expected_batch =
       Enum.map(0..9, &{opposite_pad_ref, {:buffer, %Buffer{dts: &1, payload: ""}}})
@@ -481,7 +474,9 @@ defmodule Membrane.TimestampQueue.UnitTest do
         TimestampQueue.push_stream_format(queue, pad_ref, %StreamFormat{})
       end,
       fn queue, pad_ref, i ->
-        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, %Buffer{dts: i, payload: ""})
+        {_actions, queue} =
+          TimestampQueue.push_buffer(queue, pad_ref, %Buffer{dts: i, payload: ""})
+
         queue
       end
     ]
@@ -493,9 +488,9 @@ defmodule Membrane.TimestampQueue.UnitTest do
           Enum.random(push_functions) |> apply([queue, pad_ref, i])
         end)
 
-      {[], flush_batch, closed_queue} = TimestampQueue.flush_and_close(full_queue)
+      {_actions, flush_batch, closed_queue} = TimestampQueue.flush_and_close(full_queue)
 
-      {[], pop_available_items, popped_queue} =
+      {_actions, pop_available_items, popped_queue} =
         Enum.reduce(1..100, full_queue, fn i, queue ->
           TimestampQueue.push_end_of_stream(queue, Pad.ref(:input, i))
         end)
@@ -530,10 +525,10 @@ defmodule Membrane.TimestampQueue.UnitTest do
       1..upperbound//step
       |> Enum.map(&%Buffer{pts: &1, payload: ""})
 
-    {[], queue} =
+    {_actions, queue} =
       buffers
       |> Enum.reduce(queue, fn buffer, queue ->
-        {[], queue} = TimestampQueue.push_buffer(queue, :input, buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, :input, buffer)
         queue
       end)
       |> TimestampQueue.push_buffer(:input, %Buffer{
@@ -541,7 +536,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
         payload: ""
       })
 
-    {[], given_chunks, _queue} = TimestampQueue.pop_chunked(queue)
+    {_actions, given_chunks, _queue} = TimestampQueue.pop_chunked(queue)
 
     expected_chunks =
       buffers
@@ -563,9 +558,9 @@ defmodule Membrane.TimestampQueue.UnitTest do
       1..100
       |> Enum.reduce(queue, fn i, queue ->
         pad_ref = Pad.ref(:input, i)
-        {[], queue} = TimestampQueue.push_buffer(queue, pad_ref, zero_buffer)
+        {_actions, queue} = TimestampQueue.push_buffer(queue, pad_ref, zero_buffer)
 
-        {[], queue} =
+        {_actions, queue} =
           TimestampQueue.push_buffer(queue, pad_ref, %Buffer{
             dts: Membrane.Time.seconds(i),
             payload: ""
@@ -575,14 +570,15 @@ defmodule Membrane.TimestampQueue.UnitTest do
       end)
       |> TimestampQueue.push_end_of_stream(Pad.ref(:input, 1))
 
-    {[], first_batch, queue} = TimestampQueue.pop_chunked(queue)
+    {_actions, first_batch, queue} = TimestampQueue.pop_chunked(queue)
 
     assert [first_chunk, second_chunk] = first_batch
 
-    expected_first_chunk_data =
-      MapSet.new(1..100, &{Pad.ref(:input, &1), {:buffer, zero_buffer}})
+    sorted_expected_first_chunk =
+      Enum.map(1..100, &{Pad.ref(:input, &1), {:buffer, zero_buffer}})
+      |> Enum.sort()
 
-    assert MapSet.new(first_chunk) == expected_first_chunk_data
+    assert Enum.sort(first_chunk) == sorted_expected_first_chunk
 
     expected_second_chunk = [
       {Pad.ref(:input, 1), {:buffer, %Buffer{dts: Membrane.Time.second(), payload: ""}}},
@@ -595,7 +591,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
       2..100
       |> Enum.reduce(queue, &TimestampQueue.push_end_of_stream(&2, Pad.ref(:input, &1)))
 
-    {[], second_batch, _queue} = TimestampQueue.pop_chunked(queue)
+    {_actions, second_batch, _queue} = TimestampQueue.pop_chunked(queue)
 
     expected_second_batch =
       Enum.map(2..100, fn i ->
@@ -611,8 +607,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
   test "push_buffer_and_pop_* functions work as composition of push and pop functions" do
     queue =
       TimestampQueue.new(
-        pause_demand_boundary_unit: :buffers,
-        pause_demand_boundary: 100,
+        pause_demand_boundary: {:buffers, 100},
         chunk_duration: Membrane.Time.milliseconds(10)
       )
 
@@ -661,8 +656,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
   test "push_buffer_and_pop_* functions don't return pause and resume demand actions for the same pad" do
     queue =
       TimestampQueue.new(
-        pause_demand_boundary_unit: :buffers,
-        pause_demand_boundary: 100,
+        pause_demand_boundary: {:buffers, 100},
         chunk_duration: Membrane.Time.milliseconds(10)
       )
 
@@ -688,5 +682,55 @@ defmodule Membrane.TimestampQueue.UnitTest do
 
       assert items == expected_items
     end)
+  end
+
+  test "has_pad?/2 and pads/1 work correctly" do
+    queue = TimestampQueue.new()
+
+    queue =
+      Enum.reduce([:b, :f], queue, fn pad_ref, queue ->
+        TimestampQueue.register_pad(queue, pad_ref)
+      end)
+
+    queue =
+      Enum.reduce([:a, :b], queue, fn pad_ref, queue ->
+        TimestampQueue.push_event(queue, pad_ref, %Event{})
+      end)
+
+    queue =
+      Enum.reduce([:c, :d, :h], queue, fn pad_ref, queue ->
+        buffer = %Buffer{dts: 0, payload: ""}
+        {_actions, queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
+        queue
+      end)
+
+    queue =
+      Enum.reduce([:c, :h], queue, fn pad_ref, queue ->
+        buffer = %Buffer{dts: 10, payload: ""}
+        {_actions, queue} = TimestampQueue.push_buffer(queue, pad_ref, buffer)
+        queue
+      end)
+
+    queue =
+      Enum.reduce([:b, :d, :f, :g], queue, fn pad_ref, queue ->
+        TimestampQueue.push_end_of_stream(queue, pad_ref)
+      end)
+
+    {_actions, _items, queue} = TimestampQueue.pop_available_items(queue)
+
+    queue = TimestampQueue.register_pad(queue, :e)
+
+    pads_in_queue = [:a, :c, :e, :h]
+    pads_beyond_queue = [:b, :d, :f, :g]
+
+    assert TimestampQueue.pads(queue) |> Enum.sort() == pads_in_queue
+
+    for pad_ref <- pads_in_queue do
+      assert TimestampQueue.has_pad?(queue, pad_ref)
+    end
+
+    for pad_ref <- pads_beyond_queue do
+      assert not TimestampQueue.has_pad?(queue, pad_ref)
+    end
   end
 end
