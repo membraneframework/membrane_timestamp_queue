@@ -678,7 +678,7 @@ defmodule Membrane.TimestampQueue do
   end
 
   @doc """
-  Returns list of all pads, that:
+  Returns `t:MapSet.t/0` of all pads, that:
     1) have been ever registered in the queue or item from them has been pushed to the queue
     2) their end of stream hasn't been popped from the queue.
   """
