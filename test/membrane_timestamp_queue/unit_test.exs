@@ -723,7 +723,7 @@ defmodule Membrane.TimestampQueue.UnitTest do
     pads_in_queue = [:a, :c, :e, :h]
     pads_beyond_queue = [:b, :d, :f, :g]
 
-    assert TimestampQueue.pads(queue) |> Enum.sort() == pads_in_queue
+    assert TimestampQueue.pads(queue) == MapSet.new(pads_in_queue)
 
     for pad_ref <- pads_in_queue do
       assert TimestampQueue.has_pad?(queue, pad_ref)

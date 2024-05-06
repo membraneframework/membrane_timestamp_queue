@@ -94,7 +94,7 @@ defmodule Membrane.TimestampQueue do
         before the first buffer from this pad, it will be equal 0.
   """
   @type options :: [
-          pause_demand_boundary: pos_integer() | Membrane.Time.t() | :infinity,
+          pause_demand_boundary: pause_demand_boundary(),
           chunk_duration: Membrane.Time.t(),
           synchronization_strategy: :synchronize_on_arrival | :explicit_offsets
         ]
@@ -678,13 +678,13 @@ defmodule Membrane.TimestampQueue do
   end
 
   @doc """
-  Returns list of all pads, that:
+  Returns `t:MapSet.t/0` of all pads, that:
     1) have been ever registered in the queue or item from them has been pushed to the queue
     2) their end of stream hasn't been popped from the queue.
   """
-  @spec pads(t()) :: [Pad.ref()]
+  @spec pads(t()) :: MapSet.t(Pad.ref())
   def pads(%__MODULE__{} = timestamp_queue) do
-    MapSet.to_list(timestamp_queue.known_pads)
+    timestamp_queue.known_pads
   end
 
   defp ensure_queue_not_closed!(%__MODULE__{closed?: true}, pad_ref, item) do
