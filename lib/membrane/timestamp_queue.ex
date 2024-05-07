@@ -502,7 +502,7 @@ defmodule Membrane.TimestampQueue do
   The equivalent of calling `push_buffer/2` and then `pop_chunked/1`.
   """
   @spec push_buffer_and_pop_chunked(t(), Pad.ref(), Buffer.t()) ::
-          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [popped_value()], t()}
+          {[Action.pause_auto_demand() | Action.resume_auto_demand()], [chunk()], t()}
   def push_buffer_and_pop_chunked(%__MODULE__{} = timestamp_queue, pad_ref, buffer) do
     push_buffer_and_pop(timestamp_queue, pad_ref, buffer, &pop_chunked/1)
   end
