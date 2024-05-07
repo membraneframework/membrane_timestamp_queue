@@ -15,7 +15,7 @@ The package can be installed by adding `membrane_timestamp_queue` to your list o
 ```elixir
 def deps do
   [
-    {:membrane_timestamp_queue, "~> 0.2.1"}
+    {:membrane_timestamp_queue, "~> 0.2.2"}
   ]
 end
 ```
