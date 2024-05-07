@@ -74,7 +74,7 @@ defmodule Membrane.TimestampQueue do
     - the second element is the boundary (default to `1000`).
   """
   @type pause_demand_boundary ::
-          {:buffer | :bytes, pos_integer() | :infinity} | {:time, Membrane.Time.t()}
+          {:buffers | :bytes, pos_integer() | :infinity} | {:time, Membrane.Time.t()}
 
   @typedoc """
   Options passed to `#{inspect(__MODULE__)}.new/1`.
