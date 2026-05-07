@@ -99,6 +99,7 @@ defmodule Membrane.TimestampQueue do
           synchronization_strategy: :synchronize_on_arrival | :explicit_offsets
         ]
 
+  @spec new(options) :: t()
   def new(options \\ []) do
     [
       chunk_duration: chunk_duration,
