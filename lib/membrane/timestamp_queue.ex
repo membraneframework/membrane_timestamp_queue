@@ -37,7 +37,7 @@ defmodule Membrane.TimestampQueue do
             metric_unit: :buffers | :bytes | :time,
             pad_queues: %{optional(Pad.ref()) => pad_queue()},
             pads_heap: Heap.t(),
-            blocking_registered_pads: MapSet.t(Pad.ref()),
+            blocking_registered_pads: %MapSet{},
             registered_pads_offsets: %{optional(Pad.ref()) => integer()},
             # :awaiting_pads contain at most one element at the time
             awaiting_pads: [Pad.ref()],
@@ -46,7 +46,7 @@ defmodule Membrane.TimestampQueue do
             chunk_full?: boolean(),
             next_chunk_boundary: nil | Membrane.Time.t(),
             synchronization_strategy: :synchronize_on_arrival | :explicit_offsets,
-            known_pads: MapSet.t(Pad.ref())
+            known_pads: %MapSet{}
           }
 
   defstruct current_queue_time: Membrane.Time.seconds(0),
@@ -99,6 +99,7 @@ defmodule Membrane.TimestampQueue do
           synchronization_strategy: :synchronize_on_arrival | :explicit_offsets
         ]
 
+  @spec new(options) :: t()
   def new(options \\ []) do
     [
       chunk_duration: chunk_duration,
